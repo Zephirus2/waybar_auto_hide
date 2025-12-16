@@ -82,7 +82,7 @@ fn get_cursor_pos() -> Option<CursorPos> {
 
 #[derive(Deserialize)]
 struct CursorPos {
-    _x: i32,
+    x: i32,
     y: i32,
 }
 
