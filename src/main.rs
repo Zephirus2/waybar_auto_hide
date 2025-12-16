@@ -1,3 +1,4 @@
+use serde::Deserialize;
 use std::{
     io::{BufRead, BufReader},
     os::unix::net::UnixStream,
@@ -7,9 +8,11 @@ use std::{
     time::Duration,
 };
 
-use serde::Deserialize;
-const PIXEL_THRESHOLD_SECONDARY: i32 = 50;
+// The distance from the top at which the bar will activate
 const PIXEL_THRESHOLD: i32 = 5;
+// The distane from the top at which the bar will hide again.
+const PIXEL_THRESHOLD_SECONDARY: i32 = 50;
+// The delay between between mouse position updates.
 const MOUSE_REFRESH_DELAY_MS: u64 = 100;
 fn main() {
     let (tx, rx) = mpsc::channel::<Event>();
@@ -83,20 +86,6 @@ struct CursorPos {
     y: i32,
 }
 
-fn set_waybar_visible(visible: bool) {
-    if !visible {
-        Command::new("killall")
-            .args(["-SIGUSR1", "waybar"])
-            .output()
-            .ok();
-    } else {
-        Command::new("killall")
-            .args(["-SIGUSR2", "waybar"])
-            .output()
-            .ok();
-    }
-}
-
 fn spawn_window_event_listener(tx: mpsc::Sender<Event>) {
     thread::spawn(move || {
         let socket_path = format!(
@@ -120,13 +109,14 @@ fn spawn_window_event_listener(tx: mpsc::Sender<Event>) {
                 && (line.contains("openwindow")
                     || line.contains("closewindow")
                     || line.contains("workspace"))
-                {
-                    tx.send(Event::WindowsOpened(check_windows())).ok();
-                }
+            {
+                tx.send(Event::WindowsOpened(check_windows())).ok();
+            }
         }
     });
 }
 
+/// Checks the amount of windows opened, if there is none, return false.
 fn check_windows() -> bool {
     let opened_windows: Option<ActiveWindows> = Command::new("hyprctl")
         .args(["activeworkspace", "-j"])
@@ -138,6 +128,20 @@ fn check_windows() -> bool {
         active.windows > 0
     } else {
         false
+    }
+}
+
+fn set_waybar_visible(visible: bool) {
+    if !visible {
+        Command::new("killall")
+            .args(["-SIGUSR1", "waybar"])
+            .output()
+            .ok();
+    } else {
+        Command::new("killall")
+            .args(["-SIGUSR2", "waybar"])
+            .output()
+            .ok();
     }
 }
 
