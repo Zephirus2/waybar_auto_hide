@@ -48,7 +48,7 @@ fn spawn_mouse_position_updated(tx: Sender<Event>) {
         loop {
             let cursor_pos: Option<CursorPos> = get_cursor_pos();
             if let Some(pos) = cursor_pos {
-                let treshold = if previous_state == true {
+                let treshold = if previous_state {
                     PIXEL_THRESHOLD_SECONDARY
                 } else {
                     PIXEL_THRESHOLD
@@ -116,14 +116,13 @@ fn spawn_window_event_listener(tx: mpsc::Sender<Event>) {
         let reader: BufReader<UnixStream> = BufReader::new(stream);
 
         for line in reader.lines() {
-            if let Ok(line) = line {
-                if line.contains("openwindow")
+            if let Ok(line) = line
+                && (line.contains("openwindow")
                     || line.contains("closewindow")
-                    || line.contains("workspace")
+                    || line.contains("workspace"))
                 {
                     tx.send(Event::WindowsOpened(check_windows())).ok();
                 }
-            }
         }
     });
 }
