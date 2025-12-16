@@ -1,6 +1,6 @@
 # Waybar Auto-Hide
 
-A lightweight Rust utility that automatically shows/hides Waybar in Hyprland based on cursor position and window state.
+A lightweight utility that automatically shows/hides Waybar in Hyprland based on cursor position and window state. It will hide waybar when no window is opened in the current workspace, and will temporarly make it visible when the cursor is placed at the top of the screen. 
 
 ## Installation
 
