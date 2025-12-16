@@ -9,7 +9,7 @@ use std::{
 };
 
 // The distance from the top at which the bar will activate
-const PIXEL_THRESHOLD: i32 = 5;
+const PIXEL_THRESHOLD: i32 = 3;
 // The distane from the top at which the bar will hide again.
 const PIXEL_THRESHOLD_SECONDARY: i32 = 50;
 // The delay between between mouse position updates.
