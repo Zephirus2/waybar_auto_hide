@@ -39,7 +39,7 @@ fn main() {
         let current_visible = if cursor_top { true } else { !windows_opened };
 
         if current_visible != last_visibility {
-            set_waybar_visible(current_visible);
+            toggle_waybar_visible();
         }
         last_visibility = current_visible
     }
@@ -130,18 +130,11 @@ fn check_windows() -> bool {
     }
 }
 
-fn set_waybar_visible(visible: bool) {
-    if !visible {
-        Command::new("killall")
-            .args(["-SIGUSR1", "waybar"])
-            .output()
-            .ok();
-    } else {
-        Command::new("killall")
-            .args(["-SIGUSR2", "waybar"])
-            .output()
-            .ok();
-    }
+fn toggle_waybar_visible() {
+    Command::new("killall")
+        .args(["-SIGUSR1", "waybar"])
+        .output()
+        .ok();
 }
 
 #[derive(Deserialize)]
