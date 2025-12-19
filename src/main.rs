@@ -15,14 +15,18 @@ const PIXEL_THRESHOLD_SECONDARY: i32 = 50;
 // The delay between between mouse position updates.
 const MOUSE_REFRESH_DELAY_MS: u64 = 100;
 
-/// What: Stores waybar visibility state for tracking.
+/// Stores waybar visibility state for tracking.
 ///
-/// Inputs: None
-///
-/// Output: None
-///
-/// Details: This structure maintains the visibility state of waybar to avoid
+/// This structure maintains the visibility state of waybar to avoid
 /// unnecessary toggles and ensure correct behavior.
+///
+/// # State Synchronization
+///
+/// The initial state assumes waybar is visible. If the application restarts
+/// while waybar is actually hidden, there will be a temporary state mismatch.
+/// This will self-correct on the next visibility change, as the toggle logic
+/// will detect the mismatch and correct it. Waybar does not provide a way to
+/// query its current visibility state, so we cannot synchronize the initial state.
 struct WaybarState {
     /// Tracks whether waybar is currently visible
     is_visible: bool,
@@ -35,7 +39,20 @@ fn main() {
     let mut windows_opened: bool = check_windows();
     let mut last_visibility: bool = !windows_opened;
 
-    // Assume waybar starts visible (default state) - important for correct toggling
+    // Check if waybar is running at startup
+    if !is_waybar_running() {
+        eprintln!(
+            "Warning: waybar process not found at startup. \
+             Ensure waybar is running for this utility to work correctly."
+        );
+    }
+
+    // Note: We assume waybar starts visible (default state). If the application
+    // restarts while waybar is actually hidden, there will be a temporary state
+    // mismatch. This will self-correct on the next visibility change, as the
+    // toggle logic will detect the mismatch and correct it. Waybar does not
+    // provide a way to query its current visibility state, so we cannot
+    // synchronize the initial state.
     let waybar_state = Arc::new(Mutex::new(WaybarState { is_visible: true }));
 
     spawn_mouse_position_updated(tx.clone());
@@ -136,6 +153,19 @@ fn spawn_window_event_listener(tx: mpsc::Sender<Event>) {
     });
 }
 
+/// Checks if waybar process is currently running.
+///
+/// # Returns
+///
+/// Returns `true` if waybar process is found, `false` otherwise.
+fn is_waybar_running() -> bool {
+    Command::new("pgrep")
+        .args(["-x", "waybar"])
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
 /// Checks the amount of windows opened, if there is none, return false.
 fn check_windows() -> bool {
     let opened_windows: Option<ActiveWindows> = Command::new("hyprctl")
@@ -156,74 +186,174 @@ pub struct ActiveWindows {
     windows: i32,
 }
 
-/// What: Sets waybar visibility using signal-based approach.
+/// Sets waybar visibility using signal-based approach.
 ///
-/// Inputs:
-/// - `visible`: Whether waybar should be visible
-/// - `state`: Shared state for tracking waybar visibility state
-///
-/// Output: None
-///
-/// Details: Uses waybar's signal system with proper state tracking to avoid
+/// Uses waybar's signal system with proper state tracking to avoid
 /// sync issues. Always uses SIGUSR1 for toggling visibility.
+///
+/// # Arguments
+///
+/// * `visible` - Whether waybar should be visible
+/// * `state` - Shared state for tracking waybar visibility state
+///
+/// # Panics
+///
+/// This function does not panic, but will log errors and return early
+/// if lock acquisition fails or signal sending fails after all retries.
 fn set_waybar_visible(visible: bool, state: &Arc<Mutex<WaybarState>>) {
-    // Check if toggle is needed while holding the lock
-    let needs_toggle = {
-        let Ok(state_guard) = state.lock() else {
-            eprintln!("Failed to acquire waybar state lock");
-            return;
-        };
-        let current_state = state_guard.is_visible;
-        (visible && !current_state) || (!visible && current_state)
+    let Ok(mut state_guard) = state.lock() else {
+        eprintln!("Failed to acquire waybar state lock");
+        return;
     };
+
+    // Check if toggle is needed
+    let current_state = state_guard.is_visible;
+    let needs_toggle = (visible && !current_state) || (!visible && current_state);
 
     if !needs_toggle {
         return;
     }
 
-    // Release lock before retry attempts to avoid blocking other threads
-    // Retry mechanism ensures signal is received, especially when hiding
+    // Hold lock during signal sending to prevent race conditions
+    // Release lock only during sleep operations to avoid blocking
     let mut signal_sent = false;
     for attempt in 1..=3 {
-        match Command::new("killall")
+        // Re-check state before sending to handle concurrent updates
+        let current_state = state_guard.is_visible;
+        let still_needs_toggle = (visible && !current_state) || (!visible && current_state);
+        if !still_needs_toggle {
+            // Another thread already changed the state
+            return;
+        }
+
+        drop(state_guard); // Release lock during command execution
+        let command_result = Command::new("killall")
             .args(["-SIGUSR1", "waybar"])
-            .output()
-        {
+            .output();
+
+        // Re-acquire lock immediately after command
+        state_guard = match state.lock() {
+            Ok(guard) => guard,
+            Err(_) => {
+                eprintln!(
+                    "Warning: Failed to acquire waybar state lock after sending signal. \
+                     Waybar state may have changed but internal state not updated - \
+                     potential state drift. Will retry on next call."
+                );
+                return;
+            }
+        };
+
+        match command_result {
             Ok(output) => {
                 if output.status.success() {
                     signal_sent = true;
                     break;
+                } else {
+                    let exit_code = output.status.code().unwrap_or(-1);
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    eprintln!(
+                        "Failed to send SIGUSR1 to waybar (attempt {}/3): exit code {}, stderr: {}",
+                        attempt,
+                        exit_code,
+                        if stderr.is_empty() { "<none>" } else { &stderr }
+                    );
                 }
             }
             Err(e) => {
-                eprintln!("Failed to send SIGUSR1 to waybar: {e}");
+                eprintln!(
+                    "Failed to send SIGUSR1 to waybar (attempt {}/3): {e}",
+                    attempt
+                );
             }
         }
+
         if attempt < 3 {
+            drop(state_guard); // Release lock during sleep
             thread::sleep(Duration::from_millis(50));
+            state_guard = match state.lock() {
+                Ok(guard) => guard,
+                Err(_) => {
+                    eprintln!(
+                        "Warning: Failed to acquire waybar state lock after sleep. \
+                         Cannot continue retry loop. Will retry on next function call."
+                    );
+                    return;
+                }
+            };
         }
     }
 
     // Extra retry for hiding with longer delay
     if !signal_sent && !visible {
-        thread::sleep(Duration::from_millis(200));
-        if Command::new("killall")
-            .args(["-SIGUSR1", "waybar"])
-            .output()
-            .is_ok_and(|output| output.status.success())
-        {
-            signal_sent = true;
+        // Re-check state before extra retry
+        let current_state = state_guard.is_visible;
+        let still_needs_toggle = (visible && !current_state) || (!visible && current_state);
+        if still_needs_toggle {
+            drop(state_guard); // Release lock during sleep and command
+            thread::sleep(Duration::from_millis(200));
+            let command_result = Command::new("killall")
+                .args(["-SIGUSR1", "waybar"])
+                .output();
+
+            // Re-acquire lock
+            state_guard = match state.lock() {
+                Ok(guard) => guard,
+                Err(_) => {
+                    eprintln!(
+                        "Warning: Failed to acquire waybar state lock after extra retry. \
+                         Waybar state may have changed but internal state not updated - \
+                         potential state drift. Will retry on next call."
+                    );
+                    return;
+                }
+            };
+
+            match command_result {
+                Ok(output) => {
+                    if output.status.success() {
+                        signal_sent = true;
+                    } else {
+                        let exit_code = output.status.code().unwrap_or(-1);
+                        let stderr = String::from_utf8_lossy(&output.stderr);
+                        eprintln!(
+                            "Failed to send SIGUSR1 to waybar (extra retry): exit code {}, stderr: {}",
+                            exit_code,
+                            if stderr.is_empty() { "<none>" } else { &stderr }
+                        );
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Failed to send SIGUSR1 to waybar (extra retry): {e}");
+                }
+            }
         }
     }
 
+    drop(state_guard); // Release lock during final sleep
     thread::sleep(Duration::from_millis(100));
 
-    // Re-acquire lock only to update state
+    // Update state if signal was successfully sent
     if signal_sent {
         let Ok(mut state_guard) = state.lock() else {
-            eprintln!("Failed to acquire waybar state lock for update");
+            eprintln!(
+                "Warning: Failed to acquire waybar state lock for final update. \
+                 Signal was sent successfully but internal state not updated - \
+                 potential state drift. Will retry on next call."
+            );
             return;
         };
-        state_guard.is_visible = visible;
+        // Final check to ensure state hasn't changed
+        let current_state = state_guard.is_visible;
+        let still_needs_toggle = (visible && !current_state) || (!visible && current_state);
+        if still_needs_toggle {
+            state_guard.is_visible = visible;
+        }
+    } else {
+        // Signal failed after all retries - state not updated, will retry on next call
+        eprintln!(
+            "Warning: Failed to send visibility signal to waybar after all retries. \
+             State not updated - will retry on next visibility change."
+        );
     }
 }
