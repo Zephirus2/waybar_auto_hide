@@ -22,5 +22,18 @@ A lightweight utility that automatically shows/hides Waybar in Hyprland based on
    ```
    exec-once = $HOME/.config/hypr/scripts/waybar-auto-hide &
    ```
+4. ***[RECOMENDED] Add the following lines to your waybar config***
+   
 
-4. **Restart your Hyprland session** (reloading is not enough)
+   The utility uses **SIGUSR1** and **SIGUSR2** to control visibility. By default, **SIGUSR1** toggles visibility, and **SIGUSR2** reloads the config (making the bar visible). Since Waybar can’t report its state, SIGUSR2 is the only way to ensure positive visibility    and prevent desync, though it may cause slight flicker, delay, or unnecessary I/O.
+
+   It’s recommended to add the following lines to your Waybar config for smoother operation:
+      ```
+      "on-sigusr1": "hide",
+      "on-sigusr2": "show",
+      ```
+   
+
+   
+
+6. **Restart your Hyprland session** (reloading is not enough)
