@@ -15,6 +15,23 @@ const PIXEL_THRESHOLD_SECONDARY: i32 = 50;
 // The delay between between mouse position updates.
 const MOUSE_REFRESH_DELAY_MS: u64 = 100;
 
+/// Maximum number of retry attempts when sending visibility signal to waybar.
+/// This provides resilience against transient failures in signal delivery.
+const WAYBAR_SIGNAL_RETRY_COUNT: u32 = 3;
+
+/// Delay between retry attempts when sending visibility signal to waybar.
+/// This gives waybar time to process the previous signal before retrying.
+const WAYBAR_SIGNAL_RETRY_DELAY_MS: u64 = 50;
+
+/// Delay before extra retry when initial retries fail.
+/// This longer delay gives waybar additional time to process the signal
+/// before attempting the extra retry.
+const WAYBAR_EXTRA_RETRY_DELAY_MS: u64 = 200;
+
+/// Delay after successfully sending visibility signal to waybar.
+/// This allows waybar time to process the signal before updating internal state.
+const WAYBAR_SIGNAL_POST_DELAY_MS: u64 = 100;
+
 /// Stores waybar visibility state for tracking.
 ///
 /// This structure maintains the visibility state of waybar to avoid
@@ -186,6 +203,23 @@ pub struct ActiveWindows {
     windows: i32,
 }
 
+/// Checks if a toggle is needed based on desired and current visibility state.
+///
+/// This is logically equivalent to `visible != current_state` (XOR operation).
+/// A toggle is needed when the desired state differs from the current state.
+///
+/// # Arguments
+///
+/// * `visible` - The desired visibility state
+/// * `current_state` - The current visibility state
+///
+/// # Returns
+///
+/// Returns `true` if the states differ and a toggle is needed, `false` otherwise.
+const fn needs_toggle(visible: bool, current_state: bool) -> bool {
+    visible != current_state
+}
+
 /// Sets waybar visibility using signal-based approach.
 ///
 /// Uses waybar's signal system with proper state tracking to avoid
@@ -198,8 +232,10 @@ pub struct ActiveWindows {
 ///
 /// # Panics
 ///
-/// This function does not panic, but will log errors and return early
-/// if lock acquisition fails or signal sending fails after all retries.
+/// This function does not panic. All error cases, including poisoned mutexes
+/// (when a thread panicked while holding the lock), are handled gracefully
+/// by logging errors and returning early. Lock acquisition failures and signal
+/// sending failures after all retries are also handled without panicking.
 fn set_waybar_visible(visible: bool, state: &Arc<Mutex<WaybarState>>) {
     let Ok(mut state_guard) = state.lock() else {
         eprintln!("Failed to acquire waybar state lock");
@@ -208,20 +244,17 @@ fn set_waybar_visible(visible: bool, state: &Arc<Mutex<WaybarState>>) {
 
     // Check if toggle is needed
     let current_state = state_guard.is_visible;
-    let needs_toggle = (visible && !current_state) || (!visible && current_state);
-
-    if !needs_toggle {
+    if !needs_toggle(visible, current_state) {
         return;
     }
 
     // Hold lock during signal sending to prevent race conditions
     // Release lock only during sleep operations to avoid blocking
     let mut signal_sent = false;
-    for attempt in 1..=3 {
+    for attempt in 1..=WAYBAR_SIGNAL_RETRY_COUNT {
         // Re-check state before sending to handle concurrent updates
         let current_state = state_guard.is_visible;
-        let still_needs_toggle = (visible && !current_state) || (!visible && current_state);
-        if !still_needs_toggle {
+        if !needs_toggle(visible, current_state) {
             // Another thread already changed the state
             return;
         }
@@ -244,17 +277,29 @@ fn set_waybar_visible(visible: bool, state: &Arc<Mutex<WaybarState>>) {
             }
         };
 
+        // Re-check state after re-acquiring lock to detect if another thread
+        // changed the state while the lock was released
+        let current_state = state_guard.is_visible;
+        if !needs_toggle(visible, current_state) {
+            // Another thread already changed the state while we were sending the signal
+            return;
+        }
+
         match command_result {
             Ok(output) => {
                 if output.status.success() {
                     signal_sent = true;
+                    // Update state immediately while lock is held to prevent race conditions
+                    // where another thread checks state during the post-signal sleep
+                    state_guard.is_visible = visible;
                     break;
                 } else {
                     let exit_code = output.status.code().unwrap_or(-1);
                     let stderr = String::from_utf8_lossy(&output.stderr);
                     eprintln!(
-                        "Failed to send SIGUSR1 to waybar (attempt {}/3): exit code {}, stderr: {}",
+                        "Failed to send SIGUSR1 to waybar (attempt {}/{}): exit code {}, stderr: {}",
                         attempt,
+                        WAYBAR_SIGNAL_RETRY_COUNT,
                         exit_code,
                         if stderr.is_empty() { "<none>" } else { &stderr }
                     );
@@ -262,15 +307,15 @@ fn set_waybar_visible(visible: bool, state: &Arc<Mutex<WaybarState>>) {
             }
             Err(e) => {
                 eprintln!(
-                    "Failed to send SIGUSR1 to waybar (attempt {}/3): {e}",
-                    attempt
+                    "Failed to send SIGUSR1 to waybar (attempt {}/{}): {e}",
+                    attempt, WAYBAR_SIGNAL_RETRY_COUNT
                 );
             }
         }
 
-        if attempt < 3 {
+        if attempt < WAYBAR_SIGNAL_RETRY_COUNT {
             drop(state_guard); // Release lock during sleep
-            thread::sleep(Duration::from_millis(50));
+            thread::sleep(Duration::from_millis(WAYBAR_SIGNAL_RETRY_DELAY_MS));
             state_guard = match state.lock() {
                 Ok(guard) => guard,
                 Err(_) => {
@@ -284,14 +329,14 @@ fn set_waybar_visible(visible: bool, state: &Arc<Mutex<WaybarState>>) {
         }
     }
 
-    // Extra retry for hiding with longer delay
-    if !signal_sent && !visible {
+    // Extra retry with longer delay if initial retries failed
+    // This applies to both showing and hiding for consistent reliability
+    if !signal_sent {
         // Re-check state before extra retry
         let current_state = state_guard.is_visible;
-        let still_needs_toggle = (visible && !current_state) || (!visible && current_state);
-        if still_needs_toggle {
+        if needs_toggle(visible, current_state) {
             drop(state_guard); // Release lock during sleep and command
-            thread::sleep(Duration::from_millis(200));
+            thread::sleep(Duration::from_millis(WAYBAR_EXTRA_RETRY_DELAY_MS));
             let command_result = Command::new("killall")
                 .args(["-SIGUSR1", "waybar"])
                 .output();
@@ -309,10 +354,21 @@ fn set_waybar_visible(visible: bool, state: &Arc<Mutex<WaybarState>>) {
                 }
             };
 
+            // Re-check state after re-acquiring lock to detect if another thread
+            // changed the state while the lock was released
+            let current_state = state_guard.is_visible;
+            if !needs_toggle(visible, current_state) {
+                // Another thread already changed the state while we were sending the signal
+                return;
+            }
+
             match command_result {
                 Ok(output) => {
                     if output.status.success() {
                         signal_sent = true;
+                        // Update state immediately while lock is held to prevent race conditions
+                        // where another thread checks state during the post-signal sleep
+                        state_guard.is_visible = visible;
                     } else {
                         let exit_code = output.status.code().unwrap_or(-1);
                         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -331,22 +387,23 @@ fn set_waybar_visible(visible: bool, state: &Arc<Mutex<WaybarState>>) {
     }
 
     drop(state_guard); // Release lock during final sleep
-    thread::sleep(Duration::from_millis(100));
+    thread::sleep(Duration::from_millis(WAYBAR_SIGNAL_POST_DELAY_MS));
 
-    // Update state if signal was successfully sent
+    // Final safety check: verify state is correct after sleep
+    // (State should already be updated immediately after signal send, but this
+    // serves as a safety net in case another thread changed it during the sleep)
     if signal_sent {
         let Ok(mut state_guard) = state.lock() else {
             eprintln!(
-                "Warning: Failed to acquire waybar state lock for final update. \
-                 Signal was sent successfully but internal state not updated - \
+                "Warning: Failed to acquire waybar state lock for final check. \
+                 Signal was sent successfully but final state verification failed - \
                  potential state drift. Will retry on next call."
             );
             return;
         };
-        // Final check to ensure state hasn't changed
+        // Final check to ensure state is still correct
         let current_state = state_guard.is_visible;
-        let still_needs_toggle = (visible && !current_state) || (!visible && current_state);
-        if still_needs_toggle {
+        if needs_toggle(visible, current_state) {
             state_guard.is_visible = visible;
         }
     } else {
