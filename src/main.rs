@@ -1,5 +1,6 @@
 use hyprland::data::*;
 use hyprland::shared::HyprData;
+use hyprland::shared::HyprDataActive;
 use serde::Deserialize;
 use std::{
     io::{BufRead, BufReader},
@@ -120,11 +121,14 @@ fn spawn_window_event_listener(tx: mpsc::Sender<Event>) {
 
 /// Checks the amount of windows opened, if there is none, return false.
 fn check_windows() -> bool {
+    /*
     let opened_windows: Option<ActiveWindows> = Command::new("hyprctl")
         .args(["activeworkspace", "-j"])
         .output()
         .ok()
         .and_then(|output| serde_json::from_slice(&output.stdout).ok());
+    */
+    let opened_windows = Workspace::get_active().ok();
 
     if let Some(active) = opened_windows {
         active.windows > 0
