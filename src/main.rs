@@ -1,8 +1,8 @@
 use serde::Deserialize;
 use std::{
-    io::{BufRead, BufReader},
+    fs,
+    io::{BufRead, BufReader, Read, Write},
     os::unix::net::UnixStream,
-    process::{Command, Output},
     sync::mpsc::{self, Sender},
     thread,
     time::Duration,
@@ -10,10 +10,14 @@ use std::{
 
 // The distance from the top at which the bar will activate
 const PIXEL_THRESHOLD: i32 = 3;
-// The distane from the top at which the bar will hide again.
+
+// The distance from the top at which the bar will hide again.
+
 const PIXEL_THRESHOLD_SECONDARY: i32 = 50;
-// The delay between between mouse position updates.
+// Adaptive polling: faster near the top, slower elsewhere
 const MOUSE_REFRESH_DELAY_MS: u64 = 100;
+const MOUSE_IDLE_DELAY_MS: u64 = 400;
+
 fn main() {
     let (tx, rx) = mpsc::channel::<Event>();
 
@@ -27,62 +31,105 @@ fn main() {
     tx.send(Event::CursorTop(false)).ok();
     tx.send(Event::WindowsOpened(windows_opened)).ok();
 
-    // Main loop
+    // Cache Waybar PID to avoid repeated lookups
+    let mut waybar_pid = find_waybar_pid();
+
     for event in rx {
         match event {
-            Event::CursorTop(val) => {
-                cursor_top = val;
-            }
+            Event::CursorTop(val) => cursor_top = val,
             Event::WindowsOpened(val) => windows_opened = val,
         }
 
         let current_visible = if cursor_top { true } else { !windows_opened };
 
         if current_visible != last_visibility {
-            set_waybar_visible(current_visible);
+            // Refreshes PID if it was lost or not found yet
+            if waybar_pid.is_none() {
+                waybar_pid = find_waybar_pid();
+            }
+
+            if let Some(pid) = waybar_pid {
+                if !set_waybar_visible(pid, current_visible) {
+                    // If signal fails, Waybar might have restarted
+                    waybar_pid = find_waybar_pid();
+                    if let Some(new_pid) = waybar_pid {
+                        set_waybar_visible(new_pid, current_visible);
+                    }
+                }
+            }
         }
         last_visibility = current_visible
     }
 }
+
 /// Keeps track of the mouse position
 fn spawn_mouse_position_updated(tx: Sender<Event>) {
     thread::spawn(move || {
         let mut previous_state = false;
         loop {
-            let cursor_pos: Option<CursorPos> = get_cursor_pos();
-            if let Some(pos) = cursor_pos {
-                let treshold = if previous_state {
-                    PIXEL_THRESHOLD_SECONDARY
-                } else {
-                    PIXEL_THRESHOLD
-                };
-                let is_cursor_top: bool = pos.y <= treshold;
-                if is_cursor_top != previous_state {
-                    tx.send(Event::CursorTop(is_cursor_top)).ok();
+            if let (Some(pos), Some(monitors)) = (get_cursor_pos(), get_monitors()) {
+                // Multi-monitor fix: Find which monitor the cursor is currently on
+                let active_monitor = monitors.iter().find(|m| {
+                    pos.x >= m.x
+                        && pos.x <= m.x + m.width
+                        && pos.y >= m.y
+                        && pos.y <= m.y + m.height
+                });
+
+                if let Some(m) = active_monitor {
+                    let local_y = pos.y - m.y;
+                    let threshold = if previous_state {
+                        PIXEL_THRESHOLD_SECONDARY
+                    } else {
+                        PIXEL_THRESHOLD
+                    };
+                    let is_cursor_top = local_y <= threshold;
+
+                    if is_cursor_top != previous_state {
+                        tx.send(Event::CursorTop(is_cursor_top)).ok();
+                    }
+                    previous_state = is_cursor_top;
                 }
-                previous_state = is_cursor_top;
+
+                let delay = if pos.y < 100 {
+                    MOUSE_REFRESH_DELAY_MS
+                } else {
+                    MOUSE_IDLE_DELAY_MS
+                };
+                thread::sleep(Duration::from_millis(delay));
+            } else {
                 thread::sleep(Duration::from_millis(MOUSE_REFRESH_DELAY_MS));
             }
         }
     });
 }
+
 #[derive(Debug)]
 enum Event {
     CursorTop(bool),
     WindowsOpened(bool),
 }
 
-fn get_cursor_pos() -> Option<CursorPos> {
-    let output: Output = Command::new("hyprctl")
-        .args(["-j", "cursorpos"])
-        .output()
-        .ok()?;
-    serde_json::from_slice(&output.stdout).ok()
+/// Helper to communicate with Hyprland Socket instead of spawning processes
+fn hypr_query(cmd: &str) -> Option<String> {
+    let socket_path = format!(
+        "{}/hypr/{}/.socket.sock",
+        std::env::var("XDG_RUNTIME_DIR").ok()?,
+        std::env::var("HYPRLAND_INSTANCE_SIGNATURE").ok()?
+    );
+    let mut stream = UnixStream::connect(socket_path).ok()?;
+    stream.write_all(cmd.as_bytes()).ok()?;
+    let mut response = String::new();
+    stream.read_to_string(&mut response).ok()?;
+    Some(response)
 }
 
-#[derive(Deserialize)]
-struct CursorPos {
-    y: i32,
+fn get_cursor_pos() -> Option<CursorPos> {
+    serde_json::from_str(&hypr_query("j/cursorpos")?).ok()
+}
+
+fn get_monitors() -> Option<Vec<Monitor>> {
+    serde_json::from_str(&hypr_query("j/monitors")?).ok()
 }
 
 fn spawn_window_event_listener(tx: mpsc::Sender<Event>) {
@@ -95,56 +142,58 @@ fn spawn_window_event_listener(tx: mpsc::Sender<Event>) {
 
         let stream = match UnixStream::connect(&socket_path) {
             Ok(s) => s,
-            Err(e) => {
-                eprintln!("Failed to connect to socket: {e}");
-                return;
-            }
+            Err(_) => return,
         };
 
-        let reader: BufReader<UnixStream> = BufReader::new(stream);
-
-        for line in reader.lines() {
-            if let Ok(line) = line
-                && (line.contains("openwindow")
-                    || line.contains("closewindow")
-                    || line.contains("workspace"))
-            {
+        let reader = BufReader::new(stream);
+        for line in reader.lines().flatten() {
+            if line.contains("window") || line.contains("workspace") {
                 tx.send(Event::WindowsOpened(check_windows())).ok();
             }
         }
     });
 }
 
-/// Checks the amount of windows opened, if there is none, return false.
 fn check_windows() -> bool {
-    let opened_windows: Option<ActiveWindows> = Command::new("hyprctl")
-        .args(["activeworkspace", "-j"])
-        .output()
-        .ok()
-        .and_then(|output| serde_json::from_slice(&output.stdout).ok());
-
-    if let Some(active) = opened_windows {
-        active.windows > 0
-    } else {
-        false
-    }
+    let res = hypr_query("j/activeworkspace").unwrap_or_default();
+    let data: serde_json::Value = serde_json::from_str(&res).unwrap_or_default();
+    data["windows"].as_i64().unwrap_or(0) > 0
 }
 
-fn set_waybar_visible(visible: bool) {
-    if !visible {
-        Command::new("killall")
-            .args(["-SIGUSR1", "waybar"])
-            .output()
-            .ok();
-    } else {
-        Command::new("killall")
-            .args(["-SIGUSR2", "waybar"])
-            .output()
-            .ok();
-    }
+/// Uses direct syscalls to signal Waybar
+fn set_waybar_visible(pid: i32, visible: bool) -> bool {
+    let signal = if visible { 12 } else { 10 }; // SIGUSR2 (show), SIGUSR1 (hide)
+    unsafe { libc::kill(pid, signal) == 0 }
+}
+
+fn find_waybar_pid() -> Option<i32> {
+    fs::read_dir("/proc")
+        .ok()?
+        .filter_map(|entry| {
+            let path = entry.ok()?.path();
+            if !path.is_dir() {
+                return None;
+            }
+            let comm = fs::read_to_string(path.join("comm")).ok()?;
+            if comm.trim() == "waybar" {
+                path.file_name()?.to_str()?.parse::<i32>().ok()
+            } else {
+                None
+            }
+        })
+        .next()
 }
 
 #[derive(Deserialize)]
-pub struct ActiveWindows {
-    windows: i32,
+struct CursorPos {
+    x: i32,
+    y: i32,
+}
+
+#[derive(Deserialize)]
+struct Monitor {
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
 }
