@@ -23,6 +23,6 @@ A lightweight utility that automatically shows/hides Waybar in Hyprland based on
    exec-once = $HOME/.config/hypr/scripts/waybar-auto-hide &
    ```
 4. **Restart your Hyprland session** (You can execute this if you wish to try it right now)
-``` bash
-nohup $HOME/.config/hypr/scripts/waybar-auto-hide > /dev/null 2>&1 &
-```
+    ``` bash
+    nohup $HOME/.config/hypr/scripts/waybar-auto-hide > /dev/null 2>&1 &
+    ```
