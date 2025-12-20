@@ -15,12 +15,12 @@ A lightweight utility that automatically shows/hides Waybar in Hyprland based on
 2. **Copy it to your Hyprland config directory:**
    ```bash
    mkdir -p ~/.config/hypr/scripts
-   cp target/release/waybar-auto-hide ~/.config/hypr/scripts/
+   cp target/release/waybar_auto_hide ~/.config/hypr/scripts/
    ```
 
 3. **Add to your Hyprland config** (`~/.config/hypr/hyprland.conf`):
    ```
-   exec-once = $HOME/.config/hypr/scripts/waybar-auto-hide &
+   exec-once = $HOME/.config/hypr/scripts/waybar_auto_hide &
    ```
 4. ***[RECOMENDED] Add the following lines to your waybar config***
    
