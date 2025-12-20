@@ -1,8 +1,10 @@
+use hyprland::data::*;
+use hyprland::shared::HyprData;
 use serde::Deserialize;
 use std::{
     io::{BufRead, BufReader},
     os::unix::net::UnixStream,
-    process::{Command, Output},
+    process::Command,
     sync::mpsc::{self, Sender},
     thread,
     time::Duration,
@@ -39,7 +41,7 @@ fn main() {
         let current_visible = if cursor_top { true } else { !windows_opened };
 
         if current_visible != last_visibility {
-            set_waybar_visible(current_visible);
+            set_waybar_visible();
         }
         last_visibility = current_visible
     }
@@ -49,14 +51,14 @@ fn spawn_mouse_position_updated(tx: Sender<Event>) {
     thread::spawn(move || {
         let mut previous_state = false;
         loop {
-            let cursor_pos: Option<CursorPos> = get_cursor_pos();
+            let cursor_pos: Option<CursorPosition> = CursorPosition::get().ok();
             if let Some(pos) = cursor_pos {
                 let treshold = if previous_state {
                     PIXEL_THRESHOLD_SECONDARY
                 } else {
                     PIXEL_THRESHOLD
                 };
-                let is_cursor_top: bool = pos.y <= treshold;
+                let is_cursor_top: bool = pos.y <= treshold as i64;
                 if is_cursor_top != previous_state {
                     tx.send(Event::CursorTop(is_cursor_top)).ok();
                 }
@@ -71,7 +73,7 @@ enum Event {
     CursorTop(bool),
     WindowsOpened(bool),
 }
-
+/*
 fn get_cursor_pos() -> Option<CursorPos> {
     let output: Output = Command::new("hyprctl")
         .args(["-j", "cursorpos"])
@@ -82,9 +84,10 @@ fn get_cursor_pos() -> Option<CursorPos> {
 
 #[derive(Deserialize)]
 struct CursorPos {
-    y: i32,
+    pub x: i64,
+    pub y: i64,
 }
-
+*/
 fn spawn_window_event_listener(tx: mpsc::Sender<Event>) {
     thread::spawn(move || {
         let socket_path = format!(
@@ -130,18 +133,11 @@ fn check_windows() -> bool {
     }
 }
 
-fn set_waybar_visible(visible: bool) {
-    if !visible {
-        Command::new("killall")
-            .args(["-SIGUSR1", "waybar"])
-            .output()
-            .ok();
-    } else {
-        Command::new("killall")
-            .args(["-SIGUSR2", "waybar"])
-            .output()
-            .ok();
-    }
+fn set_waybar_visible() {
+    Command::new("killall")
+        .args(["-SIGUSR1", "waybar"])
+        .output()
+        .ok();
 }
 
 #[derive(Deserialize)]
