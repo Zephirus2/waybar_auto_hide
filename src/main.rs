@@ -1,7 +1,6 @@
 use hyprland::data::*;
 use hyprland::shared::HyprData;
 use hyprland::shared::HyprDataActive;
-use serde::Deserialize;
 use std::{
     io::{BufRead, BufReader},
     os::unix::net::UnixStream,
@@ -74,21 +73,7 @@ enum Event {
     CursorTop(bool),
     WindowsOpened(bool),
 }
-/*
-fn get_cursor_pos() -> Option<CursorPos> {
-    let output: Output = Command::new("hyprctl")
-        .args(["-j", "cursorpos"])
-        .output()
-        .ok()?;
-    serde_json::from_slice(&output.stdout).ok()
-}
 
-#[derive(Deserialize)]
-struct CursorPos {
-    pub x: i64,
-    pub y: i64,
-}
-*/
 fn spawn_window_event_listener(tx: mpsc::Sender<Event>) {
     thread::spawn(move || {
         let socket_path = format!(
@@ -121,13 +106,6 @@ fn spawn_window_event_listener(tx: mpsc::Sender<Event>) {
 
 /// Checks the amount of windows opened, if there is none, return false.
 fn check_windows() -> bool {
-    /*
-    let opened_windows: Option<ActiveWindows> = Command::new("hyprctl")
-        .args(["activeworkspace", "-j"])
-        .output()
-        .ok()
-        .and_then(|output| serde_json::from_slice(&output.stdout).ok());
-    */
     let opened_windows = Workspace::get_active().ok();
 
     if let Some(active) = opened_windows {
@@ -142,9 +120,4 @@ fn set_waybar_visible() {
         .args(["-SIGUSR1", "waybar"])
         .output()
         .ok();
-}
-
-#[derive(Deserialize)]
-pub struct ActiveWindows {
-    windows: i32,
 }
