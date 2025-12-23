@@ -2,6 +2,13 @@
 
 A lightweight utility that automatically shows/hides Waybar in Hyprland based on cursor position and window state. It will hide waybar when no window is opened in the current workspace, and will temporarly make it visible when the cursor is placed at the top of the screen. 
 
+## Features
+- Automatically hides Waybar when no window is open in the current workspace.
+- Temporarily shows Waybar when the cursor is placed at the top of the screen.
+- Hides Waybar again as soon as the cursor moves away.
+- Supports multi-monitor setups
+- Works out of the box with no additional dependencies.
+
 ## Installation
 
 1. **Build the binary:** 
@@ -32,8 +39,11 @@ A lightweight utility that automatically shows/hides Waybar in Hyprland based on
       "on-sigusr1": "hide",
       "on-sigusr2": "show",
       ```
-   
 
-   
+6. **Restart your Hyprland session** (reloading is not enough, a full reboot is recomended)
 
-6. **Restart your Hyprland session** (reloading is not enough)
+
+## Special Thanks
+- [@raresgoidescu](https://github.com/raresgoidescu) for implementing multi-monitor support and direct Unix socket communication with waybar, improving performance.
+- Everyone who provided feedback, reported bugs, and opened issues!
+
