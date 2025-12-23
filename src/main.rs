@@ -14,9 +14,7 @@ const PIXEL_THRESHOLD: i32 = 3;
 // The distance from the top at which the bar will hide again.
 
 const PIXEL_THRESHOLD_SECONDARY: i32 = 50;
-// Adaptive polling: faster near the top, slower elsewhere
 const MOUSE_REFRESH_DELAY_MS: u64 = 100;
-const MOUSE_IDLE_DELAY_MS: u64 = 400;
 
 fn main() {
     let (tx, rx) = mpsc::channel::<Event>();
@@ -90,16 +88,8 @@ fn spawn_mouse_position_updated(tx: Sender<Event>) {
                     }
                     previous_state = is_cursor_top;
                 }
-
-                let delay = if pos.y < 100 {
-                    MOUSE_REFRESH_DELAY_MS
-                } else {
-                    MOUSE_IDLE_DELAY_MS
-                };
-                thread::sleep(Duration::from_millis(delay));
-            } else {
-                thread::sleep(Duration::from_millis(MOUSE_REFRESH_DELAY_MS));
             }
+            thread::sleep(Duration::from_millis(MOUSE_REFRESH_DELAY_MS));
         }
     });
 }
