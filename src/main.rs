@@ -165,7 +165,7 @@ fn find_waybar_pid() -> Option<i32> {
                 return None;
             }
             let comm = fs::read_to_string(path.join("comm")).ok()?;
-            if comm.trim() == "waybar" {
+            if comm.trim() == "waybar" || comm.trim() == ".waybar-wrapped" {
                 path.file_name()?.to_str()?.parse::<i32>().ok()
             } else {
                 None
