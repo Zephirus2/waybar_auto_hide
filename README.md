@@ -7,6 +7,8 @@ A lightweight utility that automatically shows/hides Waybar in Hyprland based on
 - Temporarily shows Waybar when the cursor is placed at the top of the screen.
 - Hides Waybar again as soon as the cursor moves away.
 - Supports multi-monitor setups
+- Supports all waybar positions (top, bottom...). See the "customization" section at the bottom.
+- Optional "always hidden" mode, which only shows the bar when the cursor is on top.
 - Works out of the box with no additional dependencies.
 
 ## Installation
@@ -43,6 +45,24 @@ A lightweight utility that automatically shows/hides Waybar in Hyprland based on
 6. **Restart your Hyprland session** (reloading is not enough, a full reboot is recomended)
 
 
+## Customization
+
+You can customize the behavior of waybar-auto-hide using command-line options:
+
+### Change Waybar Position
+To specify which edge of the screen Waybar is positioned on:
+```bash
+waybar_auto_hide --side [top|bottom|left|right]
+```
+### Always Hidden Mode
+Enable "always hidden" mode, where Waybar only appears when you move your cursor to its edge (regardless of whether windows are open):
+```bash
+waybar_auto_hide --always-hidden
+```
+**Example:**
+```bash
+exec-once = $HOME/.config/hypr/scripts/waybar_auto_hide --side bottom --always-hidden &
+```
 ## Special Thanks
 - [@raresgoidescu](https://github.com/raresgoidescu) for implementing multi-monitor support and direct Unix socket communication with waybar, improving performance.
 - Everyone who provided feedback, reported bugs, and opened issues!
