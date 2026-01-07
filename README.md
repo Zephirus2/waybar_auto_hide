@@ -50,9 +50,9 @@ A lightweight utility that automatically shows/hides Waybar in Hyprland based on
 You can customize the behavior of waybar-auto-hide using command-line options:
 
 ### Change Waybar Position
-To specify which edge of the screen Waybar is positioned on:
+To specify which edge of the screen will be used to show waybar with the mouse, add the following argument:
 ```bash
-waybar_auto_hide --side [top|bottom|left|right]
+waybar_auto_hide --side [top|bottom|left|right]  #default is top
 ```
 ### Always Hidden Mode
 Enable "always hidden" mode, where Waybar only appears when you move your cursor to its edge (regardless of whether windows are open):
