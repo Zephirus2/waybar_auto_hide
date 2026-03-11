@@ -76,20 +76,18 @@ fn spawn_mouse_position_updater(tx: Sender<Event>, args: Args) {
         let mut previous_state = false;
         loop {
             if let (Some(pos), Some(monitors)) = (get_cursor_pos(), get_monitors()) {
+                
                 // Multi-monitor fix: Find which monitor the cursor is currently on
-                let active_monitor = monitors.iter().find(|m| {
-                    pos.x >= m.x
-                        && pos.x <= m.x + m.width
-                        && pos.y >= m.y
-                        && pos.y <= m.y + m.height
-                });
+                // Scaling fix: Mouse position in impl Monitor
+                let active_monitor = monitors.iter().find(|m| m.contains(&pos));
 
+                // Scaling fix: Scaling calculation in impl Monitor
                 if let Some(m) = active_monitor {
                     let distance_from_edge = match args.side {
                         Side::Top => pos.y - m.y,
-                        Side::Bottom => (m.y + m.height) - pos.y,
+                        Side::Bottom => (m.y + m.logical_height()) - pos.y,
                         Side::Left => pos.x - m.x,
-                        Side::Right => (m.x + m.width) - pos.x,
+                        Side::Right => (m.x + m.logical_width()) - pos.x,
                     };
 
                     let threshold = if previous_state {
@@ -97,12 +95,13 @@ fn spawn_mouse_position_updater(tx: Sender<Event>, args: Args) {
                     } else {
                         PIXEL_THRESHOLD
                     };
-                    let is_cursor_top = distance_from_edge <= threshold;
+                    
+                    let is_cursor_active = distance_from_edge <= threshold;
 
-                    if is_cursor_top != previous_state {
-                        tx.send(Event::CursorTop(is_cursor_top)).ok();
+                    if is_cursor_active != previous_state {
+                        tx.send(Event::CursorTop(is_cursor_active)).ok();
                     }
-                    previous_state = is_cursor_top;
+                    previous_state = is_cursor_active;
                 }
             }
             thread::sleep(Duration::from_millis(MOUSE_REFRESH_DELAY_MS));
@@ -202,6 +201,26 @@ struct Monitor {
     y: i32,
     width: i32,
     height: i32,
+    scale: f64, // Scaling fix: Get scaling factor
+}
+
+// Scaling fix: impl to fix scaling and check for cursor out of main loop
+
+impl Monitor {
+    fn logical_width(&self) -> i32 {
+        (self.width as f64 / self.scale) as i32
+    }
+
+    fn logical_height(&self) -> i32 {
+        (self.height as f64 / self.scale) as i32
+    }
+
+    fn contains(&self, pos: &CursorPos) -> bool {
+        pos.x >= self.x
+            && pos.x < self.x + self.logical_width()
+            && pos.y >= self.y
+            && pos.y < self.y + self.logical_height()
+    }
 }
 
 #[derive(Parser, Clone)]
