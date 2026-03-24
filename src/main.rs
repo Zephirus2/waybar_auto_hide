@@ -1,4 +1,5 @@
 use clap::{Parser, ValueEnum};
+use evdev::{Key, enumerate};
 use serde::Deserialize;
 use std::{
     fs,
@@ -7,6 +8,8 @@ use std::{
     sync::mpsc::{self, Sender},
     thread,
     time::Duration,
+    collections::HashSet,
+
 };
 
 // The distance from the top at which the bar will activate
@@ -22,10 +25,12 @@ fn main() {
 
     let mut cursor_top: bool = false;
     let mut windows_opened: bool = check_windows();
+    let mut active_keys: HashSet<Key> = HashSet::new();
     let mut last_visibility: bool = !windows_opened;
 
     spawn_mouse_position_updater(tx.clone(), args.clone());
     spawn_window_event_listener(tx.clone());
+    spawn_key_listener(tx.clone());
 
     tx.send(Event::CursorTop(false)).ok();
     tx.send(Event::WindowsOpened(windows_opened)).ok();
@@ -33,16 +38,36 @@ fn main() {
     // Cache Waybar PID to avoid repeated lookups
     let mut waybar_pid = find_waybar_pid();
 
+    let mut trigger_keys: HashSet<Key> = HashSet::new();
+ 
+    if !args.trigger_keys.is_empty() {
+        trigger_keys.extend(map_trigger_keys(&args.trigger_keys));
+    }
+
     for event in rx {
         match event {
             Event::CursorTop(val) => cursor_top = val,
             Event::WindowsOpened(val) => windows_opened = val,
+
+            Event::KeyState(key, pressed) => {
+                if pressed {
+                    active_keys.insert(key);
+                } else {
+                    active_keys.remove(&key);
+                }
+            }
         }
 
+        // Trigger is active if any configured key is currently held
+        let key_trigger =
+            !trigger_keys.is_empty() && active_keys.iter().any(|k| trigger_keys.contains(k));
+
+        let trigger = cursor_top || key_trigger;
+
         let current_visible = match args.always_hidden {
-            true => cursor_top,
+            true => trigger,
             false => {
-                if cursor_top {
+                if trigger {
                     true
                 } else {
                     !windows_opened
@@ -70,13 +95,113 @@ fn main() {
     }
 }
 
+// Heuristic: select input device that exposes META key, prefer keyd virtual keyboard if present
+// NOTE: May be improved in the future by implementing more robust keyboard detection
+// or allowing manual configuration
+fn find_keyboard_device() -> Option<String> {
+    let mut fallback: Option<String> = None;
+
+    for (path, device) in enumerate() {
+        let name = device.name().unwrap_or("").to_lowercase();
+
+        if let Some(keys) = device.supported_keys() {
+            let has_super = keys.contains(Key::KEY_LEFTMETA) || keys.contains(Key::KEY_RIGHTMETA);
+
+            if has_super {
+                let path_str = path.to_string_lossy().to_string();
+
+                // Prefer keyd virtual keyboard
+                if name.contains("keyd") {
+                    println!("Using keyd device: {}", path_str);
+                    return Some(path_str);
+                }
+
+                // fallback to first valid keyboard
+                if fallback.is_none() {
+                    fallback = Some(path_str);
+                }
+            }
+        }
+    }
+
+    if let Some(ref p) = fallback {
+        println!("Using fallback keyboard: {}", p);
+    }
+
+    fallback
+}
+
+fn map_trigger_keys(keys: &[TriggerKey]) -> HashSet<Key> {
+    let mut result = HashSet::new();
+
+    for k in keys {
+        match k {
+            TriggerKey::Super => {
+                result.insert(Key::KEY_LEFTMETA);
+                result.insert(Key::KEY_RIGHTMETA);
+            }
+            TriggerKey::Ctrl => {
+                result.insert(Key::KEY_LEFTCTRL);
+                result.insert(Key::KEY_RIGHTCTRL);
+            }
+            TriggerKey::Alt => {
+                result.insert(Key::KEY_LEFTALT);
+                result.insert(Key::KEY_RIGHTALT);
+            }
+            TriggerKey::Shift => {
+                result.insert(Key::KEY_LEFTSHIFT);
+                result.insert(Key::KEY_RIGHTSHIFT);
+            }
+        }
+    }
+
+    result
+}
+
+fn spawn_key_listener(tx: Sender<Event>) {
+    use evdev::{Device, InputEventKind};
+    use std::time::Duration;
+
+    let path = find_keyboard_device().expect("No keyboard device found");
+
+    thread::spawn(move || {
+        loop {
+            match Device::open(&path) {
+                Ok(mut device) => {
+                    loop {
+                        match device.fetch_events() {
+                            Ok(events) => {
+                                for event in events {
+                                    if let InputEventKind::Key(key) = event.kind() {
+                                        // evdev key events: 1 = press, 2 = hold (repeat), 0 = release
+                                        // treat both press and hold as active to maintain "key held" behavior
+                                        let new_state = event.value() != 0;
+                                        tx.send(Event::KeyState(key, new_state)).ok();
+                                    }
+                                }
+                            }
+                            Err(_) => {
+                                // Device likely disconnected → break and reopen
+                                break;
+                            }
+                        }
+                    }
+                }
+                Err(_) => {
+                    // Retry if device not available
+                    thread::sleep(Duration::from_secs(1));
+                }
+            }
+        }
+    });
+}
+
 /// Keeps track of the mouse position
 fn spawn_mouse_position_updater(tx: Sender<Event>, args: Args) {
     thread::spawn(move || {
         let mut previous_state = false;
         loop {
             if let (Some(pos), Some(monitors)) = (get_cursor_pos(), get_monitors()) {
-                
                 // Multi-monitor fix: Find which monitor the cursor is currently on
                 // Scaling fix: Mouse position in impl Monitor
                 let active_monitor = monitors.iter().find(|m| m.contains(&pos));
@@ -95,7 +220,7 @@ fn spawn_mouse_position_updater(tx: Sender<Event>, args: Args) {
                     } else {
                         PIXEL_THRESHOLD
                     };
-                    
+
                     let is_cursor_active = distance_from_edge <= threshold;
 
                     if is_cursor_active != previous_state {
@@ -113,6 +238,7 @@ fn spawn_mouse_position_updater(tx: Sender<Event>, args: Args) {
 enum Event {
     CursorTop(bool),
     WindowsOpened(bool),
+    KeyState(Key, bool),
 }
 
 /// Helper to communicate with Hyprland Socket instead of spawning processes
@@ -228,6 +354,11 @@ struct Args {
     /// If set, the bar will always hide when the cursor is not at the top
     #[arg(long)]
     always_hidden: bool,
+
+    /// Modifier keys that trigger Waybar visibility when held (e.g. --trigger-key super alt)
+    #[arg(long = "trigger-key", num_args = 1..)]
+    trigger_keys: Vec<TriggerKey>,
+
     /// Which side of the screen the bar is located on. Beware that doesn't work well with multiple monitors.
     #[arg(long, value_enum, default_value = "top")]
     side: Side,
@@ -239,6 +370,13 @@ enum Side {
     Left,
     Right,
     Bottom,
+}
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum TriggerKey {
+    Super,
+    Ctrl,
+    Alt,
+    Shift,
 }
 
 impl Default for Side {
