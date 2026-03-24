@@ -1,6 +1,6 @@
 use clap::{Parser, ValueEnum};
+use evdev::{Key, enumerate};
 use serde::Deserialize;
-use evdev::{enumerate, Key};
 use std::{
     fs,
     io::{BufRead, BufReader, Read, Write},
@@ -76,15 +76,13 @@ fn main() {
 }
 
 fn find_keyboard_device() -> Option<String> {
-
     let mut fallback: Option<String> = None;
 
     for (path, device) in enumerate() {
         let name = device.name().unwrap_or("").to_lowercase();
 
         if let Some(keys) = device.supported_keys() {
-            let has_super =
-                keys.contains(Key::KEY_LEFTMETA) || keys.contains(Key::KEY_RIGHTMETA);
+            let has_super = keys.contains(Key::KEY_LEFTMETA) || keys.contains(Key::KEY_RIGHTMETA);
 
             if has_super {
                 let path_str = path.to_string_lossy().to_string();
@@ -160,7 +158,6 @@ fn spawn_mouse_position_updater(tx: Sender<Event>, args: Args) {
         let mut previous_state = false;
         loop {
             if let (Some(pos), Some(monitors)) = (get_cursor_pos(), get_monitors()) {
-                
                 // Multi-monitor fix: Find which monitor the cursor is currently on
                 // Scaling fix: Mouse position in impl Monitor
                 let active_monitor = monitors.iter().find(|m| m.contains(&pos));
@@ -179,7 +176,7 @@ fn spawn_mouse_position_updater(tx: Sender<Event>, args: Args) {
                     } else {
                         PIXEL_THRESHOLD
                     };
-                    
+
                     let is_cursor_active = distance_from_edge <= threshold;
 
                     if is_cursor_active != previous_state {
