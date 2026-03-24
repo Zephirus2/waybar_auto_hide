@@ -75,21 +75,28 @@ waybar_auto_hide --always-hidden
 exec-once = $HOME/.config/hypr/scripts/waybar_auto_hide --side bottom --always-hidden &
 ```
 
-### Super Key Reveal (Optional)
+### Trigger Key Reveal (Optional)
 
-You can make Waybar visible while holding the Super key:
+You can make Waybar visible while holding the Trigger key:
 
 ```bash
-waybar_auto_hide --enable-super
+waybar_auto_hide --trigger-key super
+waybar_auto_hide --trigger-key ctrl --trigger-key alt
 ```
 
 **Example:**
 
 ```bash
-exec-once = $HOME/.config/hypr/scripts/waybar_auto_hide --enable-super &
+exec-once = $HOME/.config/hypr/scripts/waybar_auto_hide --trigger-key super &
 ```
 
-This uses Linux input devices (evdev) to detect key presses.This uses Linux input devices (evdev) to detect key presses.
+This uses Linux input devices (evdev) to detect key presses.
+Supported keys:
+
+- super
+- ctrl
+- alt
+- shift
 
 ## Special Thanks
 
