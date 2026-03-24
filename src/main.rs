@@ -19,6 +19,13 @@ const PIXEL_THRESHOLD_SECONDARY: i32 = 50;
 const MOUSE_REFRESH_DELAY_MS: u64 = 100;
 
 fn main() {
+    // prevent process termination from Waybar RT signals
+    // eg. omarchy-toggle-idle sends pkill -RTMIN+9 waybar which kills our script
+    unsafe {
+        libc::setsid(); //isolate process
+        libc::signal(libc::SIGRTMIN() + 9, libc::SIG_IGN);
+    }
+
     let args = Args::parse();
     let (tx, rx) = mpsc::channel::<Event>();
 
