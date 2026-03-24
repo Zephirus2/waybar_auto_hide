@@ -1,5 +1,6 @@
 use clap::{Parser, ValueEnum};
 use serde::Deserialize;
+use evdev::{enumerate, Key};
 use std::{
     fs,
     io::{BufRead, BufReader, Read, Write},
@@ -22,10 +23,12 @@ fn main() {
 
     let mut cursor_top: bool = false;
     let mut windows_opened: bool = check_windows();
+    let mut super_pressed: bool = false;
     let mut last_visibility: bool = !windows_opened;
 
     spawn_mouse_position_updater(tx.clone(), args.clone());
     spawn_window_event_listener(tx.clone());
+    spawn_super_key_listener(tx.clone());
 
     tx.send(Event::CursorTop(false)).ok();
     tx.send(Event::WindowsOpened(windows_opened)).ok();
@@ -37,12 +40,14 @@ fn main() {
         match event {
             Event::CursorTop(val) => cursor_top = val,
             Event::WindowsOpened(val) => windows_opened = val,
+            Event::SuperPressed(val) => super_pressed = val,
         }
 
+        let trigger = cursor_top || (args.enable_super && super_pressed);
         let current_visible = match args.always_hidden {
-            true => cursor_top,
+            true => trigger,
             false => {
-                if cursor_top {
+                if trigger {
                     true
                 } else {
                     !windows_opened
@@ -68,6 +73,85 @@ fn main() {
         }
         last_visibility = current_visible
     }
+}
+
+fn find_keyboard_device() -> Option<String> {
+
+    let mut fallback: Option<String> = None;
+
+    for (path, device) in enumerate() {
+        let name = device.name().unwrap_or("").to_lowercase();
+
+        if let Some(keys) = device.supported_keys() {
+            let has_super =
+                keys.contains(Key::KEY_LEFTMETA) || keys.contains(Key::KEY_RIGHTMETA);
+
+            if has_super {
+                let path_str = path.to_string_lossy().to_string();
+
+                // Prefer keyd virtual keyboard
+                if name.contains("keyd") {
+                    println!("Using keyd device: {}", path_str);
+                    return Some(path_str);
+                }
+
+                // fallback to first valid keyboard
+                if fallback.is_none() {
+                    fallback = Some(path_str);
+                }
+            }
+        }
+    }
+
+    if let Some(ref p) = fallback {
+        println!("Using fallback keyboard: {}", p);
+    }
+
+    fallback
+}
+
+/// unix socket listener for super key
+fn spawn_super_key_listener(tx: Sender<Event>) {
+    use evdev::{Device, InputEventKind, Key};
+    use std::time::Duration;
+
+    let path = find_keyboard_device().expect("No keyboard device found");
+
+    thread::spawn(move || {
+        loop {
+            match Device::open(&path) {
+                Ok(mut device) => {
+                    let mut last_state = false;
+                    loop {
+                        match device.fetch_events() {
+                            Ok(events) => {
+                                for event in events {
+                                    if let InputEventKind::Key(key) = event.kind() {
+                                        if key == Key::KEY_LEFTMETA {
+                                            let new_state = event.value() != 0;
+
+                                            if new_state != last_state {
+                                                tx.send(Event::SuperPressed(new_state)).ok();
+                                                last_state = new_state;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            Err(_) => {
+                                // Device likely disconnected → break and reopen
+                                break;
+                            }
+                        }
+                    }
+                }
+                Err(_) => {
+                    // Retry if device not available
+                    thread::sleep(Duration::from_secs(1));
+                }
+            }
+        }
+    });
 }
 
 /// Keeps track of the mouse position
@@ -113,6 +197,7 @@ fn spawn_mouse_position_updater(tx: Sender<Event>, args: Args) {
 enum Event {
     CursorTop(bool),
     WindowsOpened(bool),
+    SuperPressed(bool),
 }
 
 /// Helper to communicate with Hyprland Socket instead of spawning processes
@@ -228,6 +313,8 @@ struct Args {
     /// If set, the bar will always hide when the cursor is not at the top
     #[arg(long)]
     always_hidden: bool,
+    #[arg(long)]
+    enable_super: bool,
     /// Which side of the screen the bar is located on. Beware that doesn't work well with multiple monitors.
     #[arg(long, value_enum, default_value = "top")]
     side: Side,
