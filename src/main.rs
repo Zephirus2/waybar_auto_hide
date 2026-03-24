@@ -2,14 +2,13 @@ use clap::{Parser, ValueEnum};
 use evdev::{Key, enumerate};
 use serde::Deserialize;
 use std::{
+    collections::HashSet,
     fs,
     io::{BufRead, BufReader, Read, Write},
     os::unix::net::UnixStream,
     sync::mpsc::{self, Sender},
     thread,
     time::Duration,
-    collections::HashSet,
-
 };
 
 // The distance from the top at which the bar will activate
@@ -39,7 +38,7 @@ fn main() {
     let mut waybar_pid = find_waybar_pid();
 
     let mut trigger_keys: HashSet<Key> = HashSet::new();
- 
+
     if !args.trigger_keys.is_empty() {
         trigger_keys.extend(map_trigger_keys(&args.trigger_keys));
     }
@@ -57,8 +56,8 @@ fn main() {
             }
         }
 
-        let key_trigger = !trigger_keys.is_empty()
-            && active_keys.iter().any(|k| trigger_keys.contains(k));
+        let key_trigger =
+            !trigger_keys.is_empty() && active_keys.iter().any(|k| trigger_keys.contains(k));
 
         let trigger = cursor_top || key_trigger;
 
@@ -105,7 +104,7 @@ fn find_keyboard_device() -> Option<String> {
             if has_super {
                 let path_str = path.to_string_lossy().to_string();
 
-                // Prefer keyd virtual keyboard
+                // Prefer keyd virtual keyboard if present
                 if name.contains("keyd") {
                     println!("Using keyd device: {}", path_str);
                     return Some(path_str);
@@ -187,7 +186,7 @@ fn spawn_key_listener(tx: Sender<Event>) {
                                 }
                             }
                             Err(_) => {
-                                // Device likely disconnected → break and reopen
+                                // Device likely disconnected: break and reopen
                                 break;
                             }
                         }

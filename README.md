@@ -90,7 +90,13 @@ waybar_auto_hide --trigger-key ctrl --trigger-key alt
 exec-once = $HOME/.config/hypr/scripts/waybar_auto_hide --trigger-key super &
 ```
 
-This uses Linux input devices (evdev) to detect key presses.
+This uses Linux input devices (`evdev`) to detect key presses.
+Ensure your user has access to `/dev/input`:
+
+```bash
+sudo usermod -aG input $USER
+```
+
 Supported keys:
 
 - super
