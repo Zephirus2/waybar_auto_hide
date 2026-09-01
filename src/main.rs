@@ -1,11 +1,17 @@
-use clap::{Parser, ValueEnum};
+use clap::Parser;
 use serde::Deserialize;
 use std::{
     collections::HashMap,
-    sync::mpsc::{self},
+    sync::{
+        Arc, Mutex,
+        mpsc::{self},
+    },
 };
 
-use crate::{hyprland::Workspace, waybar::WaybarProcess};
+use crate::{
+    hyprland::Workspace,
+    waybar::{Side, WaybarProcess},
+};
 
 mod hyprland;
 mod waybar;
@@ -21,26 +27,24 @@ fn main() {
     let args = Args::parse();
     let (tx, rx) = mpsc::channel::<Event>();
 
-    hyprland::spawn_mouse_position_updater(tx.clone(), args.clone());
-    hyprland::spawn_window_event_listener(tx.clone());
+    let mut initial_conditions: HashMap<String, Conditions> = HashMap::new();
 
-    tx.send(Event::CursorTop(String::default(), false)).ok();
+    let clients = hyprland::get_clients();
 
-    let mut monitors_cond: HashMap<String, MonitorConditions> = HashMap::new();
-    let waybar_processes: Vec<WaybarProcess> = waybar::waybar_processes();
-
-    let (Some(monitors), Some(clients)) = (hyprland::get_monitors(), hyprland::get_clients())
-    else {
-        println!("Could not communicate with hyprland");
+    let Some(monitors) = hyprland::get_monitors() else {
+        println!("Could not get monitors from hyprland");
         return;
     };
 
     for m in monitors {
-        let has_windows = hyprland::check_windows_workspace(&m.workspace, &clients);
+        let has_windows = match &clients {
+            Some(c) => hyprland::check_windows_workspace(&m.workspace, c),
+            None => false,
+        };
 
-        monitors_cond.insert(
+        initial_conditions.insert(
             m.name,
-            MonitorConditions {
+            Conditions {
                 has_cursor_edge: false,
                 has_windows,
                 waybar_visible: !has_windows,
@@ -48,53 +52,72 @@ fn main() {
         );
     }
 
+    let mut instances: HashMap<i32, WaybarInstance> = HashMap::new();
+    for process in waybar::waybar_processes() {
+        let current_condition = match &process.output {
+            Some(o) => initial_conditions.get(o).copied().unwrap_or_default(),
+            None => Conditions::default(),
+        };
+
+        instances.insert(
+            process.pid,
+            WaybarInstance {
+                conditions: current_condition.into(),
+                process: process.clone(),
+            },
+        );
+    }
+
+    let instances: Arc<HashMap<i32, WaybarInstance>> = Arc::from(instances);
+
+    hyprland::spawn_mouse_position_updater(tx.clone(), instances.clone());
+    hyprland::spawn_window_event_listener(tx.clone(), instances.clone());
+
     for event in rx {
-        match event {
-            Event::CursorTop(output, val) => {
-                if let Some(conditions) = monitors_cond.get_mut(&output) {
-                    conditions.has_cursor_edge = val
-                }
-            }
+        let Some(instance) = instances.get(&event.pid) else {
+            continue;
+        };
 
-            Event::WindowsOpened(output, val) => {
-                if let Some(conditions) = monitors_cond.get_mut(&output) {
-                    conditions.has_windows = val
-                }
-            }
+        let mut condition = instance.conditions.lock().unwrap();
+        match event.flag {
+            EventFlag::CursorTop(val) => condition.has_cursor_edge = val,
+            EventFlag::WindowsOpened(val) => condition.has_windows = val,
         }
 
-        for (output, condition) in monitors_cond.iter_mut() {
-            let current_visible: bool = match args.always_hidden {
-                true => condition.has_cursor_edge,
-                false if condition.has_cursor_edge => true,
-                false => !condition.has_windows,
-            };
+        let current_visible: bool = match args.always_hidden {
+            true => condition.has_cursor_edge,
+            false if condition.has_cursor_edge => true,
+            false => !condition.has_windows,
+        };
 
-            if current_visible != condition.waybar_visible {
-                for process in waybar_processes.iter() {
-                    if process.output.as_ref().is_some_and(|o| *o == *output)
-                        || process.output.is_none()
-                    {
-                        set_waybar_visible(process.pid, current_visible);
-                    }
-                }
-            }
-
-            condition.waybar_visible = current_visible;
+        if current_visible != condition.waybar_visible {
+            set_waybar_visible(instance.process.pid, current_visible);
         }
+        condition.waybar_visible = current_visible;
     }
 }
 
 #[derive(Debug)]
-enum Event {
-    CursorTop(String, bool),
-    WindowsOpened(String, bool),
+enum EventFlag {
+    CursorTop(bool),
+    WindowsOpened(bool),
 }
 
-struct MonitorConditions {
-    has_cursor_edge: bool,
-    has_windows: bool,
-    waybar_visible: bool,
+pub struct Event {
+    pid: i32,
+    flag: EventFlag,
+}
+
+struct WaybarInstance {
+    conditions: Mutex<Conditions>,
+    process: WaybarProcess,
+}
+
+#[derive(Default, Clone, Copy)]
+pub struct Conditions {
+    pub has_cursor_edge: bool,
+    pub has_windows: bool,
+    pub waybar_visible: bool,
 }
 
 /// Uses direct syscalls to signal Waybar
@@ -144,21 +167,4 @@ struct Args {
     /// If set, the bar will always hide when the cursor is not at the top
     #[arg(long)]
     always_hidden: bool,
-    /// Which side of the screen the bar is located on. Beware that doesn't work well with multiple monitors.
-    #[arg(long, value_enum, default_value = "top")]
-    side: Side,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, ValueEnum)]
-enum Side {
-    Top,
-    Left,
-    Right,
-    Bottom,
-}
-
-impl Default for Side {
-    fn default() -> Self {
-        Side::Top
-    }
 }

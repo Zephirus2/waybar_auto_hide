@@ -3,15 +3,32 @@ use std::{fs, path::PathBuf};
 use serde::Deserialize;
 
 /// No `output` means no specified monitor output. The process will be used for all workspaces
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct WaybarProcess {
     pub pid: i32,
     pub output: Option<String>,
+    pub side: Side,
 }
 
-#[derive(Deserialize)]
-struct Output {
-    output: String,
+#[derive(Deserialize, Default)]
+struct WaybarConfig {
+    output: Option<String>,
+    position: Side,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Side {
+    Top,
+    Left,
+    Right,
+    Bottom,
+}
+
+impl Default for Side {
+    fn default() -> Self {
+        Side::Top
+    }
 }
 
 /// Find all the waybar processes, and tries to read their configs and get their associated monitor output.
@@ -27,11 +44,15 @@ pub fn waybar_processes() -> Vec<WaybarProcess> {
                 _ => return None,
             }
             let argv = p.cmdline().ok()?;
-            let config = config_path_from_flags(&argv).or_else(default_config_path);
+            let config_path = config_path_from_flags(&argv).or_else(default_config_path);
+            let config = config_path
+                .and_then(|c| read_config(&c))
+                .unwrap_or_default();
 
             Some(WaybarProcess {
                 pid: p.pid,
-                output: config.and_then(|c| read_output_from_file(&c)),
+                output: config.output,
+                side: config.position,
             })
         })
         .collect()
@@ -66,7 +87,7 @@ fn default_config_path() -> Option<PathBuf> {
 }
 
 /// Reads the `output` field from the given config file
-fn read_output_from_file(config: &std::path::Path) -> Option<String> {
+fn read_config(config: &std::path::Path) -> Option<WaybarConfig> {
     let raw = fs::read_to_string(config).ok()?;
-    serde_json::from_str::<Output>(&raw).ok().map(|o| o.output)
+    serde_json::from_str::<WaybarConfig>(&raw).ok()
 }

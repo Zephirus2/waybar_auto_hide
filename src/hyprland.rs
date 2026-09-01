@@ -1,4 +1,6 @@
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
+use std::sync::Arc;
 use std::{
     io::{Read, Write},
     os::unix::net::UnixStream,
@@ -6,15 +8,14 @@ use std::{
     thread,
 };
 
-use std::{sync::mpsc::Sender, time::Duration};
-
 use serde::Deserialize;
+use std::{sync::mpsc::Sender, time::Duration};
 
 use super::Event;
 
 use crate::{
-    Args, CursorPos, MOUSE_REFRESH_DELAY_MS, Monitor, PIXEL_THRESHOLD, PIXEL_THRESHOLD_SECONDARY,
-    Side,
+    CursorPos, EventFlag, MOUSE_REFRESH_DELAY_MS, Monitor, PIXEL_THRESHOLD,
+    PIXEL_THRESHOLD_SECONDARY, Side, WaybarInstance,
 };
 
 #[derive(Deserialize)]
@@ -51,20 +52,29 @@ pub fn get_monitors() -> Option<Vec<Monitor>> {
 }
 
 /// Returns true of a window or more is open
-pub fn check_windows() -> Vec<Event> {
+pub fn check_windows(instances: &HashMap<i32, WaybarInstance>) -> Vec<Event> {
     let mut result: Vec<Event> = Vec::new();
 
     let (Some(monitors), Some(clients)) = (get_monitors(), get_clients()) else {
         return result;
     };
 
-    for monitor in monitors.iter() {
-        let event = Event::WindowsOpened(
-            monitor.name.clone(),
-            check_windows_workspace(&monitor.workspace, &clients),
-        );
+    for (pid, instance) in instances.iter() {
+        let has_windows = match &instance.process.output {
+            Some(name) => monitors
+                .iter()
+                .find(|m| m.name == *name)
+                .is_some_and(|m| check_windows_workspace(&m.workspace, &clients)),
+            // A bar with no `output` spans every monitor: occupied if any is
+            None => monitors
+                .iter()
+                .any(|m| check_windows_workspace(&m.workspace, &clients)),
+        };
 
-        result.push(event);
+        result.push(Event {
+            pid: *pid,
+            flag: EventFlag::WindowsOpened(has_windows),
+        });
     }
 
     return result;
@@ -82,7 +92,10 @@ pub fn check_windows_workspace(workspace: &Workspace, clients: &Vec<Client>) -> 
 
 /// Watches the compositor event stream and re-checks the window count whenever something
 /// might have changed it.
-pub fn spawn_window_event_listener(tx: mpsc::Sender<Event>) {
+pub fn spawn_window_event_listener(
+    tx: mpsc::Sender<Event>,
+    instances: Arc<HashMap<i32, WaybarInstance>>,
+) {
     thread::spawn(move || {
         let socket_path = format!(
             "{}/hypr/{}/.socket2.sock",
@@ -102,7 +115,7 @@ pub fn spawn_window_event_listener(tx: mpsc::Sender<Event>) {
                 || line.contains("closewindow")
                 || line.contains("movewindow")
             {
-                for event in check_windows() {
+                for event in check_windows(&instances) {
                     tx.send(event).ok();
                 }
             }
@@ -114,44 +127,64 @@ pub fn spawn_window_event_listener(tx: mpsc::Sender<Event>) {
 /// and checks its distance from the desired edge.
 ///
 /// Sends events to the main thread when the condition changes.
-pub fn spawn_mouse_position_updater(tx: Sender<Event>, args: Args) {
+pub fn spawn_mouse_position_updater(
+    tx: Sender<Event>,
+    waybar_instances: Arc<HashMap<i32, WaybarInstance>>,
+) {
     thread::spawn(move || {
-        let mut previous_state = false;
         loop {
             thread::sleep(Duration::from_millis(MOUSE_REFRESH_DELAY_MS));
             let (Some(pos), Some(monitors)) = (get_cursor_pos(), get_monitors()) else {
                 continue;
             };
 
-            // Multi-monitor fix: Find which monitor the cursor is currently on
-            // Scaling fix: Mouse position in impl Monitor
+            // Monitor with the cursor in it
             let Some(active_monitor) = monitors.iter().find(|m| m.contains(&pos)) else {
                 continue;
             };
 
-            // Scaling fix: Scaling calculation in impl Monitor
-            let distance_from_edge = match args.side {
-                Side::Top => pos.y - active_monitor.y,
-                Side::Bottom => (active_monitor.y + active_monitor.logical_height()) - pos.y,
-                Side::Left => pos.x - active_monitor.x,
-                Side::Right => (active_monitor.x + active_monitor.logical_width()) - pos.x,
-            };
+            for instance in waybar_instances.values() {
+                // Multi-monitor fix: Find which monitor the cursor is currently on
+                // Scaling fix: Mouse position in impl Monitor
+                let mut conditions = instance.conditions.lock().unwrap();
 
-            let threshold = match previous_state {
-                true => PIXEL_THRESHOLD_SECONDARY,
-                false => PIXEL_THRESHOLD,
-            };
+                let is_cursor_edge = match instance
+                    .process
+                    .output
+                    .as_ref()
+                    .is_none_or(|m| *m == active_monitor.name)
+                {
+                    // Cursor is not on the processes's workspace
+                    false => false,
+                    true => {
+                        let side = instance.process.side;
+                        let threshold = match conditions.has_cursor_edge {
+                            true => PIXEL_THRESHOLD_SECONDARY,
+                            false => PIXEL_THRESHOLD,
+                        };
+                        distance_from_edge(&pos, active_monitor, side) <= threshold
+                    }
+                };
 
-            let is_cursor_edge = distance_from_edge <= threshold;
-
-            if is_cursor_edge != previous_state {
-                tx.send(Event::CursorTop(
-                    active_monitor.name.clone(),
-                    is_cursor_edge,
-                ))
-                .ok();
+                if is_cursor_edge != conditions.has_cursor_edge {
+                    tx.send(Event {
+                        pid: instance.process.pid,
+                        flag: EventFlag::CursorTop(is_cursor_edge),
+                    })
+                    .ok();
+                }
+                conditions.has_cursor_edge = is_cursor_edge;
             }
-            previous_state = is_cursor_edge;
         }
     });
+}
+
+/// Returns the distance in pixels from the cursor to the desired edge.
+fn distance_from_edge(pos: &CursorPos, active_monitor: &Monitor, side: Side) -> i32 {
+    match side {
+        Side::Top => pos.y - active_monitor.y,
+        Side::Bottom => (active_monitor.y + active_monitor.logical_height()) - pos.y,
+        Side::Left => pos.x - active_monitor.x,
+        Side::Right => (active_monitor.x + active_monitor.logical_width()) - pos.x,
+    }
 }
