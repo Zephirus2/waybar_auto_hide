@@ -8,12 +8,24 @@ use std::{
 
 use std::{sync::mpsc::Sender, time::Duration};
 
+use serde::Deserialize;
+
 use super::Event;
 
 use crate::{
     Args, CursorPos, MOUSE_REFRESH_DELAY_MS, Monitor, PIXEL_THRESHOLD, PIXEL_THRESHOLD_SECONDARY,
     Side,
 };
+
+#[derive(Deserialize)]
+pub struct Client {
+    workspace: Workspace,
+}
+
+#[derive(Deserialize)]
+pub struct Workspace {
+    id: i32,
+}
 
 /// Helper to communicate with Hyprland Socket instead of spawning processes
 pub fn hypr_query(cmd: &str) -> Option<String> {
@@ -34,15 +46,38 @@ fn get_cursor_pos() -> Option<CursorPos> {
 }
 
 /// All connected monitors, each with its position in the global layout
-fn get_monitors() -> Option<Vec<Monitor>> {
+pub fn get_monitors() -> Option<Vec<Monitor>> {
     serde_json::from_str(&hypr_query("j/monitors")?).ok()
 }
 
 /// Returns true of a window or more is open
-pub fn check_windows() -> bool {
-    let res = hypr_query("j/activeworkspace").unwrap_or_default();
-    let data: serde_json::Value = serde_json::from_str(&res).unwrap_or_default();
-    data["windows"].as_i64().unwrap_or(0) > 0
+pub fn check_windows() -> Vec<Event> {
+    let mut result: Vec<Event> = Vec::new();
+
+    let (Some(monitors), Some(clients)) = (get_monitors(), get_clients()) else {
+        return result;
+    };
+
+    for monitor in monitors.iter() {
+        let event = Event::WindowsOpened(
+            monitor.name.clone(),
+            check_windows_workspace(&monitor.workspace, &clients),
+        );
+
+        result.push(event);
+    }
+
+    return result;
+}
+
+/// All open windows across every monitor and workspace
+pub fn get_clients() -> Option<Vec<Client>> {
+    serde_json::from_str(&hypr_query("j/clients")?).ok()
+}
+
+/// Returns true if at least one window is present on the given workspace
+pub fn check_windows_workspace(workspace: &Workspace, clients: &Vec<Client>) -> bool {
+    clients.iter().any(|c| c.workspace.id == workspace.id)
 }
 
 /// Watches the compositor event stream and re-checks the window count whenever something
@@ -62,8 +97,14 @@ pub fn spawn_window_event_listener(tx: mpsc::Sender<Event>) {
 
         let reader = BufReader::new(stream);
         for line in reader.lines().flatten() {
-            if line.contains("window") || line.contains("workspace") {
-                tx.send(Event::WindowsOpened(check_windows())).ok();
+            if line.contains("openwindow")
+                || line.contains("workspace")
+                || line.contains("closewindow")
+                || line.contains("movewindow")
+            {
+                for event in check_windows() {
+                    tx.send(event).ok();
+                }
             }
         }
     });
@@ -104,7 +145,11 @@ pub fn spawn_mouse_position_updater(tx: Sender<Event>, args: Args) {
             let is_cursor_edge = distance_from_edge <= threshold;
 
             if is_cursor_edge != previous_state {
-                tx.send(Event::CursorTop(is_cursor_edge)).ok();
+                tx.send(Event::CursorTop(
+                    active_monitor.name.clone(),
+                    is_cursor_edge,
+                ))
+                .ok();
             }
             previous_state = is_cursor_edge;
         }

@@ -1,6 +1,11 @@
 use clap::{Parser, ValueEnum};
 use serde::Deserialize;
-use std::sync::mpsc::{self};
+use std::{
+    collections::HashMap,
+    sync::mpsc::{self},
+};
+
+use crate::{hyprland::Workspace, waybar::WaybarProcess};
 
 mod hyprland;
 mod waybar;
@@ -16,61 +21,80 @@ fn main() {
     let args = Args::parse();
     let (tx, rx) = mpsc::channel::<Event>();
 
-    let mut cursor_top: bool = false;
-    let mut windows_opened: bool = hyprland::check_windows();
-    let mut last_visibility: bool = !windows_opened;
-
     hyprland::spawn_mouse_position_updater(tx.clone(), args.clone());
     hyprland::spawn_window_event_listener(tx.clone());
 
-    tx.send(Event::CursorTop(false)).ok();
-    tx.send(Event::WindowsOpened(windows_opened)).ok();
+    tx.send(Event::CursorTop(String::default(), false)).ok();
 
-    // Cache Waybar PID to avoid repeated lookups
-    let mut waybar_pid: Option<Vec<i32>> = waybar::find_waybar_pids();
+    let mut monitors_cond: HashMap<String, MonitorConditions> = HashMap::new();
+    let waybar_processes: Vec<WaybarProcess> = waybar::waybar_processes();
+
+    let (Some(monitors), Some(clients)) = (hyprland::get_monitors(), hyprland::get_clients())
+    else {
+        println!("Could not communicate with hyprland");
+        return;
+    };
+
+    for m in monitors {
+        let has_windows = hyprland::check_windows_workspace(&m.workspace, &clients);
+
+        monitors_cond.insert(
+            m.name,
+            MonitorConditions {
+                has_cursor_edge: false,
+                has_windows,
+                waybar_visible: !has_windows,
+            },
+        );
+    }
 
     for event in rx {
         match event {
-            Event::CursorTop(val) => cursor_top = val,
-            Event::WindowsOpened(val) => windows_opened = val,
-        }
-
-        let current_visible = match args.always_hidden {
-            true => cursor_top,
-            false => {
-                if cursor_top {
-                    true
-                } else {
-                    !windows_opened
+            Event::CursorTop(output, val) => {
+                if let Some(conditions) = monitors_cond.get_mut(&output) {
+                    conditions.has_cursor_edge = val
                 }
             }
-        };
 
-        if current_visible != last_visibility {
-            // Refreshes PID if it was lost or not found yet
-            if waybar_pid.is_none() {
-                waybar_pid = waybar::find_waybar_pids();
-                continue;
+            Event::WindowsOpened(output, val) => {
+                if let Some(conditions) = monitors_cond.get_mut(&output) {
+                    conditions.has_windows = val
+                }
             }
+        }
 
-            if let Some(pid) = &waybar_pid {
-                if !set_waybar_visible(pid[0], current_visible) {
-                    // If signal fails, Waybar might have restarted
-                    waybar_pid = waybar::find_waybar_pids();
-                    if let Some(new_pid) = &waybar_pid {
-                        set_waybar_visible(new_pid[0], current_visible);
+        for (output, condition) in monitors_cond.iter_mut() {
+            let current_visible: bool = match args.always_hidden {
+                true => condition.has_cursor_edge,
+                false if condition.has_cursor_edge => true,
+                false => !condition.has_windows,
+            };
+
+            if current_visible != condition.waybar_visible {
+                for process in waybar_processes.iter() {
+                    if process.output.as_ref().is_some_and(|o| *o == *output)
+                        || process.output.is_none()
+                    {
+                        set_waybar_visible(process.pid, current_visible);
                     }
                 }
             }
+
+            condition.waybar_visible = current_visible;
         }
-        last_visibility = current_visible
     }
 }
 
 #[derive(Debug)]
 enum Event {
-    CursorTop(bool),
-    WindowsOpened(bool),
+    CursorTop(String, bool),
+    WindowsOpened(String, bool),
+}
+
+struct MonitorConditions {
+    has_cursor_edge: bool,
+    has_windows: bool,
+    waybar_visible: bool,
 }
 
 /// Uses direct syscalls to signal Waybar
@@ -87,11 +111,14 @@ struct CursorPos {
 
 #[derive(Deserialize)]
 struct Monitor {
+    name: String,
+    #[serde(rename = "activeWorkspace")]
+    workspace: Workspace,
     x: i32,
     y: i32,
     width: i32,
     height: i32,
-    scale: f64, // Scaling fix: Get scaling factor
+    scale: f64,
 }
 
 // Scaling fix: impl to fix scaling and check for cursor out of main loop
