@@ -69,40 +69,44 @@ pub fn spawn_window_event_listener(tx: mpsc::Sender<Event>) {
     });
 }
 
-/// Keeps track of the mouse position at a constant polling rate (100 ms by default)
+/// Keeps track of the mouse position at a constant polling rate (`100 ms` by default)
+/// and checks its distance from the desired edge.
+///
+/// Sends events to the main thread when the condition changes.
 pub fn spawn_mouse_position_updater(tx: Sender<Event>, args: Args) {
     thread::spawn(move || {
         let mut previous_state = false;
         loop {
-            if let (Some(pos), Some(monitors)) = (get_cursor_pos(), get_monitors()) {
-                // Multi-monitor fix: Find which monitor the cursor is currently on
-                // Scaling fix: Mouse position in impl Monitor
-                let active_monitor = monitors.iter().find(|m| m.contains(&pos));
-
-                // Scaling fix: Scaling calculation in impl Monitor
-                if let Some(m) = active_monitor {
-                    let distance_from_edge = match args.side {
-                        Side::Top => pos.y - m.y,
-                        Side::Bottom => (m.y + m.logical_height()) - pos.y,
-                        Side::Left => pos.x - m.x,
-                        Side::Right => (m.x + m.logical_width()) - pos.x,
-                    };
-
-                    let threshold = if previous_state {
-                        PIXEL_THRESHOLD_SECONDARY
-                    } else {
-                        PIXEL_THRESHOLD
-                    };
-
-                    let is_cursor_active = distance_from_edge <= threshold;
-
-                    if is_cursor_active != previous_state {
-                        tx.send(Event::CursorTop(is_cursor_active)).ok();
-                    }
-                    previous_state = is_cursor_active;
-                }
-            }
             thread::sleep(Duration::from_millis(MOUSE_REFRESH_DELAY_MS));
+            let (Some(pos), Some(monitors)) = (get_cursor_pos(), get_monitors()) else {
+                continue;
+            };
+
+            // Multi-monitor fix: Find which monitor the cursor is currently on
+            // Scaling fix: Mouse position in impl Monitor
+            let Some(active_monitor) = monitors.iter().find(|m| m.contains(&pos)) else {
+                continue;
+            };
+
+            // Scaling fix: Scaling calculation in impl Monitor
+            let distance_from_edge = match args.side {
+                Side::Top => pos.y - active_monitor.y,
+                Side::Bottom => (active_monitor.y + active_monitor.logical_height()) - pos.y,
+                Side::Left => pos.x - active_monitor.x,
+                Side::Right => (active_monitor.x + active_monitor.logical_width()) - pos.x,
+            };
+
+            let threshold = match previous_state {
+                true => PIXEL_THRESHOLD_SECONDARY,
+                false => PIXEL_THRESHOLD,
+            };
+
+            let is_cursor_edge = distance_from_edge <= threshold;
+
+            if is_cursor_edge != previous_state {
+                tx.send(Event::CursorTop(is_cursor_edge)).ok();
+            }
+            previous_state = is_cursor_edge;
         }
     });
 }

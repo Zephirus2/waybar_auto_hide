@@ -1,11 +1,9 @@
 use clap::{Parser, ValueEnum};
 use serde::Deserialize;
-use std::{
-    fs,
-    sync::mpsc::{self},
-};
+use std::sync::mpsc::{self};
 
 mod hyprland;
+mod waybar;
 
 // The distance from the top at which the bar will activate
 const PIXEL_THRESHOLD: i32 = 3;
@@ -29,7 +27,7 @@ fn main() {
     tx.send(Event::WindowsOpened(windows_opened)).ok();
 
     // Cache Waybar PID to avoid repeated lookups
-    let mut waybar_pid: Option<Vec<i32>> = find_waybar_pids();
+    let mut waybar_pid: Option<Vec<i32>> = waybar::find_waybar_pids();
 
     for event in rx {
         match event {
@@ -51,14 +49,14 @@ fn main() {
         if current_visible != last_visibility {
             // Refreshes PID if it was lost or not found yet
             if waybar_pid.is_none() {
-                waybar_pid = find_waybar_pids();
+                waybar_pid = waybar::find_waybar_pids();
                 continue;
             }
 
             if let Some(pid) = &waybar_pid {
                 if !set_waybar_visible(pid[0], current_visible) {
                     // If signal fails, Waybar might have restarted
-                    waybar_pid = find_waybar_pids();
+                    waybar_pid = waybar::find_waybar_pids();
                     if let Some(new_pid) = &waybar_pid {
                         set_waybar_visible(new_pid[0], current_visible);
                     }
@@ -81,27 +79,6 @@ fn set_waybar_visible(pid: i32, visible: bool) -> bool {
     unsafe { libc::kill(pid, signal) == 0 }
 }
 
-fn find_waybar_pids() -> Option<Vec<i32>> {
-    let pids: Vec<i32> = fs::read_dir("/proc")
-        .into_iter()
-        .flatten()
-        .filter_map(|entry| {
-            let path = entry.ok()?.path();
-            if !path.is_dir() {
-                return None;
-            }
-            let comm = fs::read_to_string(path.join("comm")).ok()?;
-            if comm.trim() == "waybar" || comm.trim() == ".waybar-wrapped" {
-                path.file_name()?.to_str()?.parse::<i32>().ok()
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    (!pids.is_empty()).then_some(pids)
-}
-
 #[derive(Deserialize)]
 struct CursorPos {
     x: i32,
@@ -118,7 +95,6 @@ struct Monitor {
 }
 
 // Scaling fix: impl to fix scaling and check for cursor out of main loop
-
 impl Monitor {
     fn logical_width(&self) -> i32 {
         (self.width as f64 / self.scale) as i32
