@@ -14,7 +14,7 @@ use std::{sync::mpsc::Sender, time::Duration};
 use super::Event;
 
 use crate::{
-    CursorPos, EventFlag, MOUSE_REFRESH_DELAY_MS, Monitor, PIXEL_THRESHOLD,
+    Conditions, CursorPos, EventFlag, MOUSE_REFRESH_DELAY_MS, Monitor, PIXEL_THRESHOLD,
     PIXEL_THRESHOLD_SECONDARY, Side, WaybarInstance,
 };
 
@@ -134,53 +134,64 @@ pub fn spawn_mouse_position_updater(
     thread::spawn(move || {
         loop {
             thread::sleep(Duration::from_millis(MOUSE_REFRESH_DELAY_MS));
+
             let (Some(pos), Some(monitors)) = (get_cursor_pos(), get_monitors()) else {
                 continue;
             };
-
             // Monitor with the cursor in it
-            let Some(active_monitor) = monitors.iter().find(|m| m.contains(&pos)) else {
+            let Some(monitor) = monitors.iter().find(|m| m.contains(&pos)) else {
                 continue;
             };
 
             for instance in waybar_instances.values() {
                 // Multi-monitor fix: Find which monitor the cursor is currently on
-                // Scaling fix: Mouse position in impl Monitor
-                let mut conditions = instance.conditions.lock().unwrap();
+                let mut cond = instance.conditions.lock().unwrap();
 
-                let is_cursor_edge = match instance
-                    .process
-                    .output
-                    .as_ref()
-                    .is_none_or(|m| *m == active_monitor.name)
-                {
-                    // Cursor is not on the processes's workspace
-                    false => false,
-                    true => {
-                        let side = instance.process.side;
-                        let threshold = match conditions.has_cursor_edge {
-                            true => PIXEL_THRESHOLD_SECONDARY,
-                            false => PIXEL_THRESHOLD,
-                        };
-                        distance_from_edge(&pos, active_monitor, side) <= threshold
-                    }
-                };
-
-                if is_cursor_edge != conditions.has_cursor_edge {
+                let is_cursor_edge = resolve_cursor_edge(&pos, monitor, instance, &cond);
+                if is_cursor_edge != cond.has_cursor_edge {
                     tx.send(Event {
                         pid: instance.process.pid,
                         flag: EventFlag::CursorTop(is_cursor_edge),
                     })
                     .ok();
                 }
-                conditions.has_cursor_edge = is_cursor_edge;
+                cond.has_cursor_edge = is_cursor_edge;
             }
         }
     });
 }
 
+/// Returns true if the cursor is within the instance's workspace
+/// and if it's close enough to the side.
+fn resolve_cursor_edge(
+    pos: &CursorPos,
+    active_monitor: &Monitor,
+    instance: &WaybarInstance,
+    conditions: &Conditions,
+) -> bool {
+    let is_on_edge = match instance
+        .process
+        .output
+        .as_ref()
+        .is_none_or(|m| *m == active_monitor.name)
+    {
+        // Cursor is not on the processes's workspace
+        false => false,
+        true => {
+            let side = instance.process.side;
+            let threshold = match conditions.has_cursor_edge {
+                true => PIXEL_THRESHOLD_SECONDARY,
+                false => PIXEL_THRESHOLD,
+            };
+            distance_from_edge(pos, active_monitor, side) <= threshold
+        }
+    };
+    is_on_edge
+}
+
 /// Returns the distance in pixels from the cursor to the desired edge.
 fn distance_from_edge(pos: &CursorPos, active_monitor: &Monitor, side: Side) -> i32 {
+    // Scaling fix: Mouse position in impl Monitor
     match side {
         Side::Top => pos.y - active_monitor.y,
         Side::Bottom => (active_monitor.y + active_monitor.logical_height()) - pos.y,
