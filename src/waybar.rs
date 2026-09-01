@@ -18,18 +18,15 @@ struct WaybarConfig {
 
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum Side {
+    #[default]
     Top,
     Left,
     Right,
     Bottom,
 }
 
-impl Default for Side {
-    fn default() -> Self {
-        Side::Top
-    }
-}
 
 /// Find all the waybar processes, and tries to read their configs and get their associated monitor output.
 pub fn waybar_processes() -> Vec<WaybarProcess> {

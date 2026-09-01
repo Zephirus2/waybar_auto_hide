@@ -77,7 +77,7 @@ pub fn check_windows(instances: &HashMap<i32, WaybarInstance>) -> Vec<Event> {
         });
     }
 
-    return result;
+    result
 }
 
 /// All open windows across every monitor and workspace
@@ -169,7 +169,7 @@ fn resolve_cursor_edge(
     instance: &WaybarInstance,
     conditions: &Conditions,
 ) -> bool {
-    let is_on_edge = match instance
+    match instance
         .process
         .output
         .as_ref()
@@ -185,8 +185,7 @@ fn resolve_cursor_edge(
             };
             distance_from_edge(pos, active_monitor, side) <= threshold
         }
-    };
-    is_on_edge
+    }
 }
 
 /// Returns the distance in pixels from the cursor to the desired edge.
