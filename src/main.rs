@@ -9,7 +9,7 @@ use std::{
 };
 
 use crate::{
-    hyprland::Workspace,
+    hyprland::{Workspace, check_windows},
     waybar::{Side, WaybarProcess},
 };
 
@@ -27,48 +27,22 @@ fn main() {
     let args = Args::parse();
     let (tx, rx) = mpsc::channel::<Event>();
 
-    let mut initial_conditions: HashMap<String, Conditions> = HashMap::new();
-
-    let clients = hyprland::get_clients();
-
-    let Some(monitors) = hyprland::get_monitors() else {
-        println!("Could not get monitors from hyprland");
-        return;
-    };
-
-    for m in monitors {
-        let has_windows = match &clients {
-            Some(c) => hyprland::check_windows_workspace(&m.workspace, c),
-            None => false,
-        };
-
-        initial_conditions.insert(
-            m.name,
-            Conditions {
-                has_cursor_edge: false,
-                has_windows,
-                waybar_visible: !has_windows,
-            },
-        );
-    }
-
     let mut instances: HashMap<i32, WaybarInstance> = HashMap::new();
     for process in waybar::waybar_processes() {
-        let current_condition = match &process.output {
-            Some(o) => initial_conditions.get(o).copied().unwrap_or_default(),
-            None => Conditions::default(),
-        };
-
         instances.insert(
             process.pid,
             WaybarInstance {
-                conditions: current_condition.into(),
+                conditions: Conditions::default().into(),
                 process: process.clone(),
             },
         );
     }
 
     let instances: Arc<HashMap<i32, WaybarInstance>> = Arc::from(instances);
+
+    for event in check_windows(&instances) {
+        tx.send(event).ok();
+    }
 
     hyprland::spawn_mouse_position_updater(tx.clone(), instances.clone());
     hyprland::spawn_window_event_listener(tx.clone(), instances.clone());
