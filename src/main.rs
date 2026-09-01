@@ -32,7 +32,7 @@ fn main() {
         instances.insert(
             process.pid,
             WaybarInstance {
-                conditions: Conditions::default().into(),
+                conditions: State::default().into(),
                 process: process.clone(),
             },
         );
@@ -54,27 +54,27 @@ fn main() {
 
         let mut condition = instance.conditions.lock().unwrap();
         match event.flag {
-            EventFlag::CursorTop(val) => condition.has_cursor_edge = val,
-            EventFlag::WindowsOpened(val) => condition.has_windows = val,
+            EventFlag::CursorEdge(val) => condition.cursor_edge = val,
+            EventFlag::WindowsOpen(val) => condition.windows = val,
         }
 
         let current_visible: bool = match args.always_hidden {
-            true => condition.has_cursor_edge,
-            false if condition.has_cursor_edge => true,
-            false => !condition.has_windows,
+            true => condition.cursor_edge,
+            false if condition.cursor_edge => true,
+            false => !condition.windows,
         };
 
-        if current_visible != condition.waybar_visible {
+        if current_visible != condition.visible {
             set_waybar_visible(instance.process.pid, current_visible);
         }
-        condition.waybar_visible = current_visible;
+        condition.visible = current_visible;
     }
 }
 
 #[derive(Debug)]
 enum EventFlag {
-    CursorTop(bool),
-    WindowsOpened(bool),
+    CursorEdge(bool),
+    WindowsOpen(bool),
 }
 
 pub struct Event {
@@ -83,15 +83,15 @@ pub struct Event {
 }
 
 struct WaybarInstance {
-    conditions: Mutex<Conditions>,
+    conditions: Mutex<State>,
     process: WaybarProcess,
 }
 
 #[derive(Default, Clone, Copy)]
-pub struct Conditions {
-    pub has_cursor_edge: bool,
-    pub has_windows: bool,
-    pub waybar_visible: bool,
+pub struct State {
+    pub cursor_edge: bool,
+    pub windows: bool,
+    pub visible: bool,
 }
 
 /// Uses direct syscalls to signal Waybar

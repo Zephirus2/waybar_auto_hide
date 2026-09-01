@@ -14,8 +14,8 @@ use std::{sync::mpsc::Sender, time::Duration};
 use super::Event;
 
 use crate::{
-    Conditions, CursorPos, EventFlag, MOUSE_REFRESH_DELAY_MS, Monitor, PIXEL_THRESHOLD,
-    PIXEL_THRESHOLD_SECONDARY, Side, WaybarInstance,
+    CursorPos, EventFlag, MOUSE_REFRESH_DELAY_MS, Monitor, PIXEL_THRESHOLD,
+    PIXEL_THRESHOLD_SECONDARY, Side, State, WaybarInstance,
 };
 
 #[derive(Deserialize)]
@@ -73,7 +73,7 @@ pub fn check_windows(instances: &HashMap<i32, WaybarInstance>) -> Vec<Event> {
 
         result.push(Event {
             pid: *pid,
-            flag: EventFlag::WindowsOpened(has_windows),
+            flag: EventFlag::WindowsOpen(has_windows),
         });
     }
 
@@ -148,14 +148,14 @@ pub fn spawn_mouse_position_updater(
                 let mut cond = instance.conditions.lock().unwrap();
 
                 let is_cursor_edge = resolve_cursor_edge(&pos, monitor, instance, &cond);
-                if is_cursor_edge != cond.has_cursor_edge {
+                if is_cursor_edge != cond.cursor_edge {
                     tx.send(Event {
                         pid: instance.process.pid,
-                        flag: EventFlag::CursorTop(is_cursor_edge),
+                        flag: EventFlag::CursorEdge(is_cursor_edge),
                     })
                     .ok();
                 }
-                cond.has_cursor_edge = is_cursor_edge;
+                cond.cursor_edge = is_cursor_edge;
             }
         }
     });
@@ -167,7 +167,7 @@ fn resolve_cursor_edge(
     pos: &CursorPos,
     active_monitor: &Monitor,
     instance: &WaybarInstance,
-    conditions: &Conditions,
+    conditions: &State,
 ) -> bool {
     match instance
         .process
@@ -179,7 +179,7 @@ fn resolve_cursor_edge(
         false => false,
         true => {
             let side = instance.process.side;
-            let threshold = match conditions.has_cursor_edge {
+            let threshold = match conditions.cursor_edge {
                 true => PIXEL_THRESHOLD_SECONDARY,
                 false => PIXEL_THRESHOLD,
             };
