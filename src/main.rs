@@ -31,7 +31,7 @@ fn main() {
     tx.send(Event::WindowsOpened(windows_opened)).ok();
 
     // Cache Waybar PID to avoid repeated lookups
-    let mut waybar_pid = find_waybar_pid();
+    let mut waybar_pid: Option<Vec<i32>> = find_waybar_pids();
 
     for event in rx {
         match event {
@@ -53,15 +53,16 @@ fn main() {
         if current_visible != last_visibility {
             // Refreshes PID if it was lost or not found yet
             if waybar_pid.is_none() {
-                waybar_pid = find_waybar_pid();
+                waybar_pid = find_waybar_pids();
+                continue;
             }
 
-            if let Some(pid) = waybar_pid {
-                if !set_waybar_visible(pid, current_visible) {
+            if let Some(pid) = &waybar_pid {
+                if !set_waybar_visible(pid[0], current_visible) {
                     // If signal fails, Waybar might have restarted
-                    waybar_pid = find_waybar_pid();
-                    if let Some(new_pid) = waybar_pid {
-                        set_waybar_visible(new_pid, current_visible);
+                    waybar_pid = find_waybar_pids();
+                    if let Some(new_pid) = &waybar_pid {
+                        set_waybar_visible(new_pid[0], current_visible);
                     }
                 }
             }
@@ -76,7 +77,6 @@ fn spawn_mouse_position_updater(tx: Sender<Event>, args: Args) {
         let mut previous_state = false;
         loop {
             if let (Some(pos), Some(monitors)) = (get_cursor_pos(), get_monitors()) {
-                
                 // Multi-monitor fix: Find which monitor the cursor is currently on
                 // Scaling fix: Mouse position in impl Monitor
                 let active_monitor = monitors.iter().find(|m| m.contains(&pos));
@@ -95,7 +95,7 @@ fn spawn_mouse_position_updater(tx: Sender<Event>, args: Args) {
                     } else {
                         PIXEL_THRESHOLD
                     };
-                    
+
                     let is_cursor_active = distance_from_edge <= threshold;
 
                     if is_cursor_active != previous_state {
@@ -171,9 +171,10 @@ fn set_waybar_visible(pid: i32, visible: bool) -> bool {
     unsafe { libc::kill(pid, signal) == 0 }
 }
 
-fn find_waybar_pid() -> Option<i32> {
-    fs::read_dir("/proc")
-        .ok()?
+fn find_waybar_pids() -> Option<Vec<i32>> {
+    let pids: Vec<i32> = fs::read_dir("/proc")
+        .into_iter()
+        .flatten()
         .filter_map(|entry| {
             let path = entry.ok()?.path();
             if !path.is_dir() {
@@ -186,7 +187,9 @@ fn find_waybar_pid() -> Option<i32> {
                 None
             }
         })
-        .next()
+        .collect();
+
+    (!pids.is_empty()).then_some(pids)
 }
 
 #[derive(Deserialize)]
