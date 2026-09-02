@@ -55,7 +55,7 @@ pub fn get_clients() -> Option<Vec<Client>> {
 }
 
 /// Returns true if at least one window is present on the given workspace
-pub fn check_windows_workspace(workspace: &Workspace, clients: &Vec<Client>) -> bool {
+pub fn check_windows_workspace(workspace: &Workspace, clients: &[Client]) -> bool {
     clients.iter().any(|c| c.workspace.id == workspace.id)
 }
 
@@ -66,7 +66,7 @@ pub fn hyprland_events_listener(tx: mpsc::Sender<Event>) {
             panic!("could not connect to hyprland socket")
         };
 
-        for line in reader.lines().flatten() {
+        for line in reader.lines().map_while(Result::ok) {
             // Clients related updates (windows opened, closed or moved)
             if line.contains("openwindow")
                 || line.contains("closewindow")
