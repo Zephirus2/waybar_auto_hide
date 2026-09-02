@@ -76,18 +76,25 @@ fn config_path_from_flags(argv: &[String]) -> Option<PathBuf> {
     None
 }
 
-/// Default config path when no -c flag is passed (~/.config/waybar/config)
+/// Default config path when no -c flag is passed (~/.config/waybar/config etc)
+/// Follows Waybar's own search order.
 fn default_config_path() -> Option<PathBuf> {
-    let dir = match std::env::var("XDG_CONFIG_HOME") {
-        Ok(x) if !x.is_empty() => PathBuf::from(x),
-        _ => PathBuf::from(std::env::var("HOME").ok()?).join(".config"),
-    }
-    .join("waybar");
+    let home = PathBuf::from(std::env::var_os("HOME")?);
+    let config_home = match std::env::var_os("XDG_CONFIG_HOME").filter(|x| !x.is_empty()) {
+        Some(x) => PathBuf::from(x),
+        None => home.join(".config"),
+    };
 
-    ["config", "config.jsonc"]
-        .iter()
-        .map(|name| dir.join(name))
-        .find(|c| c.is_file())
+    let dirs = [
+        config_home.join("waybar"),
+        home.join(".config/waybar"),
+        home.join("waybar"),
+        PathBuf::from("/etc/xdg/waybar"),
+    ];
+
+    dirs.iter()
+        .flat_map(|dir| ["config", "config.jsonc"].map(|name| dir.join(name)))
+        .find(|path| path.is_file())
 }
 
 /// Reads the `output` field from the given config file
