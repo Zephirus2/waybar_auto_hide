@@ -2,14 +2,14 @@ use clap::Parser;
 use serde::Deserialize;
 use std::{
     collections::HashMap,
-    sync::{
-        Arc, Mutex,
-        mpsc::{self},
-    },
+    sync::mpsc::{self},
 };
 
 use crate::{
-    hyprland::{Workspace, check_windows},
+    hyprland::{
+        Client, Workspace, check_windows_workspace, get_clients, get_cursor_pos, get_monitors,
+        resolve_cursor_edge,
+    },
     waybar::{Side, WaybarProcess},
 };
 
@@ -29,69 +29,91 @@ fn main() {
 
     let mut instances: HashMap<i32, WaybarInstance> = HashMap::new();
     for process in waybar::waybar_processes() {
-        instances.insert(
-            process.pid,
-            WaybarInstance {
-                conditions: State::default().into(),
-                process: process.clone(),
-            },
-        );
+        instances.insert(process.pid, WaybarInstance::new(process));
     }
 
-    let instances: Arc<HashMap<i32, WaybarInstance>> = Arc::from(instances);
+    hyprland::spawn_mouse_position_updater(tx.clone());
+    hyprland::hyprland_events_listener(tx.clone());
 
-    for event in check_windows(&instances) {
-        tx.send(event).ok();
-    }
-
-    hyprland::spawn_mouse_position_updater(tx.clone(), instances.clone());
-    hyprland::spawn_window_event_listener(tx.clone(), instances.clone());
+    // "World" data getting updated by events
+    let mut monitors = get_monitors().unwrap_or_default();
+    let mut cursor_pos = get_cursor_pos().unwrap_or_default();
+    let mut clients: Vec<Client> = get_clients().unwrap_or_default();
 
     for event in rx {
-        let Some(instance) = instances.get(&event.pid) else {
-            continue;
-        };
-
-        let mut condition = instance.conditions.lock().unwrap();
-        match event.flag {
-            EventFlag::CursorEdge(val) => condition.cursor_edge = val,
-            EventFlag::WindowsOpen(val) => condition.windows = val,
+        match event {
+            Event::CursorUpdate(updated_pos) => cursor_pos = updated_pos,
+            Event::WindowsUpdate(updated_clients) => clients = updated_clients,
+            Event::MonitorUpdates(updated_monitors) => monitors = updated_monitors,
         }
 
-        let current_visible: bool = match args.always_hidden {
-            true => condition.cursor_edge,
-            false if condition.cursor_edge => true,
-            false => !condition.windows,
-        };
-
-        if current_visible != condition.visible {
-            set_waybar_visible(instance.process.pid, current_visible);
+        for instance in instances.values_mut() {
+            update(instance, &cursor_pos, &monitors, &clients, &args);
         }
-        condition.visible = current_visible;
     }
 }
 
-#[derive(Debug)]
-enum EventFlag {
-    CursorEdge(bool),
-    WindowsOpen(bool),
+/// Recomputes one instance's state from the current world and signals Waybar if it changed.
+fn update(
+    instance: &mut WaybarInstance,
+    cursor_pos: &CursorPos,
+    monitors: &[Monitor],
+    clients: &Vec<Client>,
+    args: &Args,
+) {
+    // Monitor with the cursor in it
+    let cursor_monitor = monitors.iter().find(|m| m.contains(cursor_pos));
+
+    // Read before the write: resolve_cursor_edge needs the previous value for hysteresis
+    let cursor_edge =
+        cursor_monitor.is_some_and(|monitor| resolve_cursor_edge(cursor_pos, monitor, instance));
+    instance.cursor_edge = cursor_edge;
+
+    instance.windows = match &instance.process.output {
+        Some(name) => monitors
+            .iter()
+            .find(|m| m.name == *name)
+            .is_some_and(|m| check_windows_workspace(&m.workspace, clients)),
+        // A bar with no `output` spans every monitor: occupied if any is
+        None => monitors
+            .iter()
+            .any(|m| check_windows_workspace(&m.workspace, clients)),
+    };
+
+    let current_visible: bool = match args.always_hidden {
+        true => instance.cursor_edge,
+        false if instance.cursor_edge => true,
+        false => !instance.windows,
+    };
+
+    if current_visible != instance.visible {
+        set_waybar_visible(instance.process.pid, current_visible);
+        instance.visible = current_visible;
+    }
 }
 
-pub struct Event {
-    pid: i32,
-    flag: EventFlag,
+enum Event {
+    CursorUpdate(CursorPos),
+    WindowsUpdate(Vec<Client>),
+    MonitorUpdates(Vec<Monitor>),
 }
 
 struct WaybarInstance {
-    conditions: Mutex<State>,
     process: WaybarProcess,
-}
-
-#[derive(Default, Clone, Copy)]
-pub struct State {
     pub cursor_edge: bool,
     pub windows: bool,
     pub visible: bool,
+}
+
+impl WaybarInstance {
+    fn new(process: WaybarProcess) -> Self {
+        Self {
+            process,
+            cursor_edge: false,
+            windows: false,
+            visible: true,
+        }
+    }
 }
 
 /// Uses direct syscalls to signal Waybar
@@ -100,7 +122,7 @@ fn set_waybar_visible(pid: i32, visible: bool) -> bool {
     unsafe { libc::kill(pid, signal) == 0 }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 struct CursorPos {
     x: i32,
     y: i32,
