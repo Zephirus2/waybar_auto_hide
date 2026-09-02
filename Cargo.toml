@@ -12,6 +12,7 @@ procfs = "0.18.0"
 jsonc-parser = { version = "0.33.1", features = ["serde"] }
 
 [profile.release]
-opt-level = 3
+opt-level = "z"
 lto = "fat"
 codegen-units = 1
+strip = true
