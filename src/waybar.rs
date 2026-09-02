@@ -7,13 +7,37 @@ use serde::Deserialize;
 #[derive(Debug, Clone)]
 pub struct WaybarProcess {
     pub pid: i32,
-    pub output: Option<String>,
+    pub output: Vec<String>,
     pub side: Side,
+}
+
+impl WaybarProcess {
+    /// Whether this bar is present on the given monitor. No specified output means all monitors are covered
+    pub fn covers_monitor(&self, monitor: &str) -> bool {
+        self.output.is_empty() || self.output.iter().any(|o| o == monitor)
+    }
+}
+
+/// Waybar's `output` accepts a single name or a list.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum Output {
+    One(String),
+    Many(Vec<String>),
+}
+
+impl Output {
+    fn into_vec(self) -> Vec<String> {
+        match self {
+            Output::One(name) => vec![name],
+            Output::Many(names) => names,
+        }
+    }
 }
 
 #[derive(Deserialize, Default)]
 struct WaybarConfig {
-    output: Option<String>,
+    output: Option<Output>,
     position: Side,
     #[serde(rename = "on-sigusr1")]
     on_sigusr1: Option<String>,
@@ -55,7 +79,7 @@ pub fn waybar_processes() -> Vec<WaybarProcess> {
 
             Some(WaybarProcess {
                 pid: p.pid,
-                output: config.output,
+                output: config.output.map(Output::into_vec).unwrap_or_default(),
                 side: config.position,
             })
         })

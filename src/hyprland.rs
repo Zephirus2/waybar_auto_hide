@@ -133,13 +133,7 @@ pub fn resolve_cursor_edge(
     active_monitor: &Monitor,
     instance: &WaybarInstance,
 ) -> bool {
-    match instance
-        .process
-        .output
-        .as_ref()
-        .is_none_or(|m| *m == active_monitor.name)
-    {
-        // Cursor is not on the processes's workspace
+    match instance.process.covers_monitor(&active_monitor.name) {
         false => false,
         true => {
             let side = instance.process.side;

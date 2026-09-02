@@ -77,16 +77,10 @@ fn update(
         cursor_monitor.is_some_and(|monitor| resolve_cursor_edge(cursor_pos, monitor, instance));
     instance.cursor_edge = cursor_edge;
 
-    instance.windows = match &instance.process.output {
-        Some(name) => monitors
-            .iter()
-            .find(|m| m.name == *name)
-            .is_some_and(|m| check_windows_workspace(&m.workspace, clients)),
-        // A bar with no `output` spans every monitor: occupied if any is
-        None => monitors
-            .iter()
-            .any(|m| check_windows_workspace(&m.workspace, clients)),
-    };
+    instance.windows = monitors
+        .iter()
+        .filter(|m| instance.process.covers_monitor(&m.name))
+        .any(|m| check_windows_workspace(&m.workspace, clients));
 
     let current_visible: bool = match args.always_hidden {
         true => instance.cursor_edge,
