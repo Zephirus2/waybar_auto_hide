@@ -25,6 +25,14 @@ const MOUSE_REFRESH_DELAY_MS: u64 = 100;
 
 fn main() {
     let args = Args::parse();
+
+    if args.side.is_some() {
+        let msg = "waybar_auto_hide: --side is deprecated and ignored. \
+                   The side is now read from each waybar config's \"position\" field.";
+        eprintln!("warning: {msg}");
+        hyprland::notify(0, 10000, msg); // 0 = warning
+    }
+
     let (tx, rx) = mpsc::channel::<Event>();
 
     let mut instances: HashMap<i32, WaybarInstance> = HashMap::new();
@@ -163,4 +171,8 @@ struct Args {
     /// If set, the bar will always hide when the cursor is not at the top
     #[arg(long)]
     always_hidden: bool,
+
+    /// Deprecated and ignored: the side is now read from each waybar config's `position`.
+    #[arg(long, hide = true)]
+    side: Option<String>,
 }
