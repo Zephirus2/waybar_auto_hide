@@ -1,5 +1,6 @@
 use std::{fs, path::PathBuf};
 
+use jsonc_parser::ParseOptions;
 use serde::Deserialize;
 
 /// No `output` means no specified monitor output. The process will be used for all workspaces
@@ -92,7 +93,8 @@ fn default_config_path() -> Option<PathBuf> {
 /// Reads the `output` field from the given config file
 fn read_config(config: &std::path::Path) -> Option<WaybarConfig> {
     let raw = fs::read_to_string(config).ok()?;
-    serde_json::from_str::<WaybarConfig>(&raw).ok()
+    let value = jsonc_parser::parse_to_serde_value(&raw, &ParseOptions::default()).ok()?;
+    serde_json::from_value::<WaybarConfig>(value).ok()
 }
 
 /// Waybar defaults to `toggle` on SIGUSR1 and `reload` on SIGUSR2.
