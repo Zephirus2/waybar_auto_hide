@@ -4,7 +4,7 @@ A lightweight utility that automatically shows and hides Waybar in Hyprland base
  
 ## Features
  
-- Automatically hides Waybar when no window is open in the current workspace.
+- Automatically hides Waybar when a window is open in the current workspace.
 - Temporarily shows Waybar when the cursor is placed at its edge.
 - Hides Waybar again as soon as the cursor moves away.
 - Supports multi-monitor setups, with each bar tracking its own monitor.
