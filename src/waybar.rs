@@ -14,6 +14,10 @@ pub struct WaybarProcess {
 struct WaybarConfig {
     output: Option<String>,
     position: Side,
+    #[serde(rename = "on-sigusr1")]
+    on_sigusr1: Option<String>,
+    #[serde(rename = "on-sigusr2")]
+    on_sigusr2: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -26,7 +30,6 @@ pub enum Side {
     Right,
     Bottom,
 }
-
 
 /// Find all the waybar processes, and tries to read their configs and get their associated monitor output.
 pub fn waybar_processes() -> Vec<WaybarProcess> {
@@ -45,6 +48,9 @@ pub fn waybar_processes() -> Vec<WaybarProcess> {
             let config = config_path
                 .and_then(|c| read_config(&c))
                 .unwrap_or_default();
+
+            // Warn users if they don't have their configs properly set
+            verify_waybar_config(p.pid, &config);
 
             Some(WaybarProcess {
                 pid: p.pid,
@@ -77,7 +83,7 @@ fn default_config_path() -> Option<PathBuf> {
     }
     .join("waybar");
 
-    ["config", "config.json"]
+    ["config", "config.jsonc"]
         .iter()
         .map(|name| dir.join(name))
         .find(|c| c.is_file())
@@ -87,4 +93,25 @@ fn default_config_path() -> Option<PathBuf> {
 fn read_config(config: &std::path::Path) -> Option<WaybarConfig> {
     let raw = fs::read_to_string(config).ok()?;
     serde_json::from_str::<WaybarConfig>(&raw).ok()
+}
+
+/// Waybar defaults to `toggle` on SIGUSR1 and `reload` on SIGUSR2.
+/// Verifies that the config is set properly
+fn verify_waybar_config(pid: i32, config: &WaybarConfig) {
+    let hide = config.on_sigusr1.as_deref() == Some("hide");
+    let show = config.on_sigusr2.as_deref() == Some("show");
+
+    if hide && show {
+        return;
+    }
+
+    let msg = format!(
+        "waybar_auto_hide: waybar {pid} needs \"on-sigusr1\": \"hide\" and \
+         \"on-sigusr2\": \"show\" in its config (currently {}, {})",
+        config.on_sigusr1.as_deref().unwrap_or("toggle"),
+        config.on_sigusr2.as_deref().unwrap_or("reload"),
+    );
+
+    crate::hyprland::notify(0, 15000, &msg); // 0 = warning
+    panic!("{msg}");
 }

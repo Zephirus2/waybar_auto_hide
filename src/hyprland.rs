@@ -59,6 +59,14 @@ pub fn check_windows_workspace(workspace: &Workspace, clients: &[Client]) -> boo
     clients.iter().any(|c| c.workspace.id == workspace.id)
 }
 
+/// Sends a notification through Hyprland's built-in notification system.
+/// `icon`: 0 warning, 1 info, 2 hint, 3 error, 5 ok, -1 none. `color` 0 = icon default.
+pub fn notify(icon: i32, time_ms: u64, message: &str) {
+    // The command is newline-terminated on the wire, so the message must stay one line.
+    let message = message.replace('\n', " ");
+    let _ = hypr_query(&format!("notify {icon} {time_ms} 0 {message}"));
+}
+
 /// Watches the compositor event stream and send updates to the main thread
 pub fn hyprland_events_listener(tx: mpsc::Sender<Event>) {
     thread::spawn(move || {
