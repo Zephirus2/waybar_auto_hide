@@ -121,7 +121,6 @@ fn verify_waybar_config(pid: i32, config: &WaybarConfig) {
         config.on_sigusr2.as_deref().unwrap_or("reload"),
     );
 
-    eprintln!("warning: {msg}");
     crate::hyprland::notify(0, 15000, &msg); // 0 = warning
     panic!("{msg}");
 }
