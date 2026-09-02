@@ -1,14 +1,16 @@
 # Waybar Auto-Hide
-
-A lightweight utility that automatically shows/hides Waybar in Hyprland based on cursor position and window state. It will hide waybar when no window is opened in the current workspace, and will temporarly make it visible when the cursor is placed at the top of the screen. 
-
+ 
+A lightweight utility that automatically shows and hides Waybar in Hyprland based on cursor position and window state. It hides Waybar when no window is open in the current workspace, and temporarily makes it visible when the cursor is placed at the edge of the screen.
+ 
 ## Features
+ 
 - Automatically hides Waybar when no window is open in the current workspace.
-- Temporarily shows Waybar when the cursor is placed at the top of the screen.
+- Temporarily shows Waybar when the cursor is placed at its edge.
 - Hides Waybar again as soon as the cursor moves away.
-- Supports multi-monitor setups
-- Supports all waybar positions (top, bottom...). See the "customization" section at the bottom.
-- Optional "always hidden" mode, which only shows the bar when the cursor is on top.
+- Supports multi-monitor setups, with each bar tracking its own monitor.
+- Supports multiple Waybar instances, including several bars on the same monitor (one at the top and one at the bottom, for example).
+- Reads each bar's `position` straight from its Waybar config, so every instance uses the correct edge with no extra setup.
+- Optional "always hidden" mode, which only shows a bar when the cursor is at its edge.
 - Works out of the box with no additional dependencies.
 
 ## Installation
@@ -27,42 +29,103 @@ A lightweight utility that automatically shows/hides Waybar in Hyprland based on
    cp target/release/waybar_auto_hide ~/.config/hypr/scripts/
    ```
 
-3. **Add to your Hyprland config** (`~/.config/hypr/hyprland.conf`):
-   ```
+3. ***[REQUIRED] Add the following lines to your waybar config***
+   
+      ```jsonc
+      {
+        "on-sigusr1": "hide",
+        "on-sigusr2": "show",
+         // ...the rest of your config
+      }
+      ```
+             
+   Visibility is controlled through **SIGUSR1** and **SIGUSR2**. Waybar's defaults are `toggle` for SIGUSR1 and `reload` for SIGUSR2, which don't work here: Waybar can't report its own state, so `toggle` drifts out of sync, and `reload` restarts the bar on every show, causing flicker and unnecessary I/O.
+ 
+    Waybar Auto-Hide reads your config at startup and checks these values. If they're missing or wrong, it will craash and send a notification.
+
+4. **Add to your Hyprland config** (`~/.config/hypr/hyprland.conf`):
+   ```bash
    exec-once = $HOME/.config/hypr/scripts/waybar_auto_hide &
    ```
-4. ***[RECOMENDED] Add the following lines to your waybar config***
+   ...or with the new lua syntax:
+   ```lua
+   hl.on("hyprland.start", function()
+	   hl.exec_cmd("$HOME/.config/hypr/scripts/waybar_auto_hide &")
+   end)
+   ```
+
+
+   Make sure to launch waybar_auto_hide **after** your waybar instances. If you launch waybar from hyprland, you can add a sleep delay before launching it:
+   ```bash
+   sleep 1 && $HOME/.config/hypr/scripts/waybar_auto_hide &
+   ```
    
 
-   The utility uses **SIGUSR1** and **SIGUSR2** to control visibility. By default, **SIGUSR1** toggles visibility, and **SIGUSR2** reloads the config (making the bar visible). Since Waybar can’t report its state, SIGUSR2 is the only way to ensure positive visibility    and prevent desync, though it may cause slight flicker, delay, or unnecessary I/O.
 
-   It’s recommended to add the following lines to your Waybar config for smoother operation:
-      ```
-      "on-sigusr1": "hide",
-      "on-sigusr2": "show",
-      ```
-
-6. **Restart your Hyprland session** (reloading is not enough, a full reboot is recomended)
+5. **Restart your Hyprland session** (reloading is not enough, a full reboot is recomended)
 
 
 ## Customization
-
-You can customize the behavior of waybar-auto-hide using command-line options:
-
-### Change Waybar Position
-To specify which edge of the screen will be used to show waybar with the mouse, add the following argument:
-```bash
-waybar_auto_hide --side [top|bottom|left|right]  #default is top
-```
+ 
 ### Always Hidden Mode
-Enable "always hidden" mode, where Waybar only appears when you move your cursor to its edge (regardless of whether windows are open):
+ 
+Bars only appear when you move the cursor to their edge, whether or not windows are open:
+ 
 ```bash
 waybar_auto_hide --always-hidden
 ```
+ 
 **Example:**
-```bash
-exec-once = $HOME/.config/hypr/scripts/waybar_auto_hide --side bottom --always-hidden &
+ 
 ```
+exec-once = $HOME/.config/hypr/scripts/waybar_auto_hide --always-hidden &
+```
+ 
+### Bar Position
+ 
+There's no option to set this. Each bar's edge is read from the `position` field of its own Waybar config, which is what makes per-instance positions possible — a top bar and a bottom bar on the same monitor each respond to their own edge.
+ 
+
+## True multi-monitor setups
+ 
+What follows is an example, not part of the project. All that's actually required is **one Waybar process per monitor**, each started with a config naming its own `output`. A config with no `output` spans every monitor, but those bars share one process, so a signal hides all of them at once.
+ 
+Rather than maintaining a near-identical config per monitor, keep one template at `~/.config/waybar/config.jsonc` with a placeholder:
+ 
+```jsonc
+{
+  "output": "REPLACE_OUTPUT",
+  "position": "top",
+  "on-sigusr1": "hide",
+  "on-sigusr2": "show",
+  // ...the rest of your config
+}
+```
+ 
+Then copy it once per monitor, substituting the name (requires `jq`):
+ 
+```bash
+#!/usr/bin/env bash
+for m in $(hyprctl monitors -j | jq -r '.[].name'); do
+    sed "s/REPLACE_OUTPUT/$m/" ~/.config/waybar/config.jsonc > "/tmp/waybar-$m.jsonc"
+    waybar -c "/tmp/waybar-$m.jsonc" &
+done
+```
+ 
+Save it as `~/.config/hypr/scripts/waybar-launch.sh`, `chmod +x` it, and launch both:
+ 
+```
+hl.exec_cmd("$HOME/.config/hypr/scripts/waybar-launch.sh")
+hl.exec_cmd("sleep 1 && $HOME/.config/hypr/scripts/waybar_auto_hide &")
+```
+ 
+**Order matters.** Waybar Auto-Hide scans for Waybar processes once, at startup, so give the bars a moment to come up.
+
+## Upgrading from an earlier version
+ 
+- **`--side` has been removed.** Position now comes from each Waybar config's `position` field. Passing `--side` prints a warning and is otherwise ignored, so existing launch commands won't break, but you should drop it.
+- **The signal config is now required, not just recommended.** Bars without `"on-sigusr1": "hide"` and `"on-sigusr2": "show"` will cause the program to exit with a notification instead of misbehaving silently.
+
 ## Special Thanks
 - [@raresgoidescu](https://github.com/raresgoidescu) for implementing multi-monitor support and direct Unix socket communication with waybar, improving performance.
 - Everyone who provided feedback, reported bugs, and opened issues!
