@@ -19,6 +19,8 @@ use crate::{
 #[derive(Deserialize)]
 pub struct Client {
     workspace: Workspace,
+    // 0 = normal, 2 = fullscreen
+    fullscreen: u8,
 }
 
 #[derive(Deserialize)]
@@ -54,9 +56,17 @@ pub fn get_clients() -> Option<Vec<Client>> {
     serde_json::from_str(&hypr_query("j/clients")?).ok()
 }
 
-/// Returns true if at least one window is present on the given workspace
-pub fn check_windows_workspace(workspace: &Workspace, clients: &[Client]) -> bool {
-    clients.iter().any(|c| c.workspace.id == workspace.id)
+/// Returns (has_windows, has_fullscreen) for the given workspace
+pub fn workspace_state(workspace: &Workspace, clients: &[Client]) -> (bool, bool) {
+    let mut on_ws = clients
+        .iter()
+        .filter(|c| c.workspace.id == workspace.id)
+        .peekable();
+
+    let has_windows = on_ws.peek().is_some();
+    let has_fullscreen = on_ws.any(|c| c.fullscreen == 2);
+
+    (has_windows, has_fullscreen)
 }
 
 /// Sends a notification through Hyprland's built-in notification system.
@@ -79,6 +89,7 @@ pub fn hyprland_events_listener(tx: mpsc::Sender<Event>) {
             if line.contains("openwindow")
                 || line.contains("closewindow")
                 || line.contains("movewindow")
+                || line.contains("fullscreen")
             {
                 let Some(clients) = get_clients() else {
                     continue;
