@@ -7,8 +7,8 @@ use std::{
 
 use crate::{
     hyprland::{
-        Client, Workspace, check_windows_workspace, get_clients, get_cursor_pos, get_monitors,
-        resolve_cursor_edge,
+        Client, Workspace, get_clients, get_cursor_pos, get_monitors, resolve_cursor_edge,
+        workspace_state,
     },
     waybar::{Side, WaybarProcess},
 };
@@ -77,15 +77,29 @@ fn update(
         cursor_monitor.is_some_and(|monitor| resolve_cursor_edge(cursor_pos, monitor, instance));
     instance.cursor_edge = cursor_edge;
 
-    instance.windows = monitors
+    let mut has_fullscreen = false;
+    let mut has_windows = false;
+
+    for m in monitors
         .iter()
         .filter(|m| instance.process.covers_monitor(&m.name))
-        .any(|m| check_windows_workspace(&m.workspace, clients));
+    {
+        let (windows, fullscreen) = workspace_state(&m.workspace, clients);
+        has_fullscreen |= fullscreen;
+        has_windows |= windows;
+    }
 
-    let current_visible: bool = match args.always_hidden {
-        true => instance.cursor_edge,
-        false if instance.cursor_edge => true,
-        false => !instance.windows,
+    instance.fullscreen = has_fullscreen;
+    instance.windows = has_windows;
+
+    println!("fullscren {}", instance.fullscreen);
+
+    let current_visible = if instance.fullscreen {
+        false
+    } else if args.always_hidden {
+        instance.cursor_edge
+    } else {
+        instance.cursor_edge || !instance.windows
     };
 
     if current_visible != instance.visible {
@@ -104,6 +118,7 @@ struct WaybarInstance {
     process: WaybarProcess,
     pub cursor_edge: bool,
     pub windows: bool,
+    pub fullscreen: bool,
     pub visible: bool,
 }
 
@@ -113,6 +128,7 @@ impl WaybarInstance {
             process,
             cursor_edge: false,
             windows: false,
+            fullscreen: false,
             visible: true,
         }
     }
