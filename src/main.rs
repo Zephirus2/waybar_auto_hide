@@ -92,8 +92,6 @@ fn update(
     instance.fullscreen = has_fullscreen;
     instance.windows = has_windows;
 
-    println!("fullscren {}", instance.fullscreen);
-
     let current_visible = if instance.fullscreen {
         false
     } else if args.always_hidden {
