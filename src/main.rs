@@ -116,10 +116,13 @@ enum Event {
 
 struct WaybarInstance {
     process: WaybarProcess,
-    pub cursor_edge: bool,
-    pub windows: bool,
-    pub fullscreen: bool,
     pub visible: bool,
+    // Is the cursor on waybar's edge
+    pub cursor_edge: bool,
+    // Does the current workspace contains windows
+    pub windows: bool,
+    // Does the current workspace contains windows in fullscreen
+    pub fullscreen: bool,
 }
 
 impl WaybarInstance {
