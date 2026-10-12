@@ -38,6 +38,7 @@ impl Output {
 #[derive(Deserialize, Default)]
 struct WaybarConfig {
     output: Option<Output>,
+    #[serde(default)]
     position: Side,
     #[serde(rename = "on-sigusr1")]
     on_sigusr1: Option<String>,
